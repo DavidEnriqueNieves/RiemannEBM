@@ -1,7 +1,7 @@
 from .dataloader import AlphaNum, AlphaNumV2, ImageLoader, ImageLoader_amb
 from torchvision import datasets, transforms
 import os
-
+import argparse
 
 def get_dataloader(data_root, dataset, image_size=128, sequential=False, letter=None, rot_dist='uniform'):
     path_to_data = os.path.join(data_root, dataset)
@@ -47,27 +47,19 @@ def get_dataloader_im(data_root,
     return dloader
 
 
-def get_dataloader_ambiant(data_root,
-                      dataset,
-                      image_size=128,
-                      device='cpu',
-                      ae_name="stable_diff_14",
-                      ambiant=False):
-    path_to_data = os.path.join(data_root, dataset)
-    if dataset == 'afhq':
-        dloader = ImageLoader_amb(data_root=path_to_data,
-                              image_size=image_size,
-                              device=device,
-                              ae_name=ae_name,
-                              load_ambiant=ambiant)
-    else:
-        raise NotImplementedError()
-
-    return dloader
-
 if __name__ == "__main__":
-    get_dataloader_im(data_root="/media/data_cifs_lrs/projects/prj_mental/datasets",
-                      dataset="afhq",
+    parser = argparse.ArgumentParser("Preprocessing data")
+    ## DATA args
+    parser.add_argument('--dataset', type=str, default='afhq', choices=['alphanum', 'cifar10', 'afhq', 'celebahq'])
+    parser.add_argument("--data_root", type=str, default="/media/data_cifs_lrs/projects/prj_mental/datasets")
+
+
+
+    args = parser.parse_args()
+
+
+    get_dataloader_im(data_root=args.data_root,
+                      dataset=args.dataset,
                       image_size=128,
                       device="cuda:0",
                       ae_name="stable_diff_14_aug",
