@@ -53,10 +53,10 @@ python train_interpolant.py
             --lr 1e-4
             --nb_iteration 200000 
 ```
-Change --metric 'conf_ebm_logp' to --metric 'conf_ebm_invp' to change the type of Riemannian metric to compute the geodesics.
+Change ```--metric 'conf_ebm_logp'``` to ```--metric 'conf_ebm_invp'``` to change the type of Riemannian metric to compute the geodesics.
 This script reproduce the Figure 6 of the article:
 
 
 <p align="center">
-  <img src="img/Fig6.png" alt="Courbe" width="600">
+  <img src="img/Fig6.png" alt="Courbe" width="1000">
 </p><em> Geodesics on the AFHQ dataset. Each block shows an interpolated trajectory between two animal images (cats and dogs), projected back into image space for visualization. </em></p>
