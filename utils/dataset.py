@@ -1,4 +1,4 @@
-from .dataloader import AlphaNum, AlphaNumV2, ImageLoader, ImageLoader_amb
+from .dataloader import AlphaNum, AlphaNumV2, ImageLoader
 from torchvision import datasets, transforms
 import os
 import argparse
