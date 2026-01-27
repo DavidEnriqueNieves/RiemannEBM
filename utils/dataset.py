@@ -2,6 +2,7 @@ from .dataloader import AlphaNum, AlphaNumV2, ImageLoader
 from torchvision import datasets, transforms
 import os
 import argparse
+import debugpy
 
 def get_dataloader(data_root, dataset, image_size=128, sequential=False, letter=None, rot_dist='uniform'):
     path_to_data = os.path.join(data_root, dataset)
@@ -25,14 +26,18 @@ def get_dataloader_im(data_root,
                       image_size=128,
                       device='cpu',
                       ae_name="stable_diff_14",
-                      ambiant=False):
+                      ambiant=False,
+                      split_name="train"):
+    print(f"{dataset=}")
+    print(f"{data_root=}")
     path_to_data = os.path.join(data_root, dataset)
     if dataset == 'afhq' or dataset == 'celebahq':
         dloader = ImageLoader(data_root=path_to_data,
                               image_size=image_size,
                               device=device,
                               ae_name=ae_name,
-                              load_ambiant=ambiant)
+                              load_ambiant=ambiant,
+                              split_name=split_name)
     elif dataset == 'cifar10':
         transf = transforms.Compose([
             transforms.Resize((image_size, image_size)),
@@ -52,16 +57,22 @@ if __name__ == "__main__":
     ## DATA args
     parser.add_argument('--dataset', type=str, default='afhq', choices=['alphanum', 'cifar10', 'afhq', 'celebahq'])
     parser.add_argument("--data_root", type=str, default="/media/data_cifs_lrs/projects/prj_mental/datasets")
-
-
+    parser.add_argument("--split", type=str, default="train")
+    parser.add_argument("--debug", action="store_true", help="Whether to run in debug mode")
 
     args = parser.parse_args()
 
+    if args.debug:
+        debugpy.listen(5678)
+        print("Waiting for debugger attach...")
+        debugpy.wait_for_client()
+        print("Debugger attached.")
 
     get_dataloader_im(data_root=args.data_root,
                       dataset=args.dataset,
                       image_size=128,
                       device="cuda:0",
                       ae_name="stable_diff_14_aug",
-                      ambiant=True
+                      ambiant=True,
+                      split_name=str(args.split)
                       )

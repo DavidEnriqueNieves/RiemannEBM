@@ -84,6 +84,7 @@ class ImageLoader(VisionDataset):
                  image_size,
                  device='cuda:0',
                  ae_name="stable_diff_14",
+                 split_name = "train",
                  load_ambiant=False):
         super().__init__()
         self.data_path = data_root
@@ -127,14 +128,14 @@ class ImageLoader(VisionDataset):
                 )
             else:
                 self.base_train_dataset = self.image_base_dataset(
-                    "total", self.latent_transform
+                    split_name, self.latent_transform
                 )
             self.data_train = self._get_latent(database=self.base_train_dataset,
                                                save_path=self.train_latent_save_path)
 
         if load_ambiant:
             self.base_train_ambiant_dataset = self.image_base_dataset(
-                "total", self.latent_transform
+                split_name, self.latent_transform
             )
 
             self.data_train_ambiant = self._get_ambiant(database=self.base_train_ambiant_dataset,
