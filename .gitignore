@@ -1,0 +1,7 @@
+outputs/
+**/__pycache__/
+plots/
+*.png
+*.swp
+*.pth
+*.dico
