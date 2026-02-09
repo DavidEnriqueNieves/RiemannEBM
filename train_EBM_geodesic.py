@@ -110,8 +110,27 @@ def get_metrics_dict(cfg: DictConfig, mixture_1: nn.Module, pos: Tensor, ebm: nn
 
     return dico_metric_unif
 
+
 @hydra.main(version_base=None, config_path="configs", config_name="train_geodesic_intrp", )
 def main(cfg: DictConfig):
+
+    root_exps_dir: Path = Path("./exps")
+    root_exps_dir.mkdir(exist_ok=True)
+
+    exp_group: str = cfg.meta.experiment_group
+    exp_name: str = cfg.meta.experiment_name
+    
+    timestr: str = datetime.now().strftime("%Y%m%d-%H%M%S")
+    exp_dir: Path = root_exps_dir / exp_group / f"{exp_name}_{timestr}"
+
+    exp_dir.mkdir(exist_ok=True, parents=True)
+
+    print(f"Experiment directory: {exp_dir}")
+
+    
+    config_path: Path = exp_dir / "config.yaml"
+    OmegaConf.save(config=cfg, f=config_path)
+    print(f"Configuration saved to {config_path}")
 
     if cfg.debug:
         ipdb.set_trace()
