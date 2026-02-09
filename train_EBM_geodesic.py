@@ -275,8 +275,6 @@ def main(cfg: DictConfig):
             all_metric_losses[metric].append(loss.item())
 
     torch.save(all_metric_timed_trajs, exp_dir / "ConfMetric_traj_uniform.dico")
-            dico_traj[metric] =  z_t.cpu().detach()    
-    torch.save(dico_traj, "./ConfMetric_traj_uniform.dico")
     
     normed_m2_color: Tensor = torch.tensor([147,112,219]) 
     normed_m3_color: Tensor = torch.tensor([128,0,128])
