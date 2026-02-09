@@ -1,73 +1,33 @@
 # %%
-import torch
-from typing import Tuple
-import ipdb
-import torch.nn as nn
-import einops
-from tqdm import tqdm
-from model import MLP_ELU_convex
-from torch import Tensor
-from utils.toy_dataset import GaussianMixture
-from omegaconf import DictConfig, OmegaConf
-from einops import rearrange, repeat, reduce, parse_shape
-import hydra
+from typing import Set
+from cbs import plot_end_comparison
+from dataclasses import dataclass   
+from datetime import datetime
+import pickle
+import plotly
 from hydra import initialize, compose
 from hydra.utils import instantiate
-import sys
-sys.path.append("../")
-import matplotlib.pyplot as plt
-from utils.toy_dataset import GaussianMixture
-import math
-import numpy as np
+from metrics import h_diag_RBF, Method3Metric, Method2Metric, h_diag_Land, DiagonalRiemannianMetric, ConformalRiemannianMetric
+from model import MLP_ELU_convex
+from omegaconf import DictConfig, OmegaConf
+from pathlib import Path
+from plotly import graph_objects as go
 from sklearn.cluster import KMeans
-
-def plot_intermittent(x_p, y_p, energy_landscape_1, EPOCH, z_t, all_loss, ep):
-    print(f"{ep+1}/{EPOCH}")
-    fig, ax = plt.subplots(1, 2, figsize=(2*5,3), dpi=100)
-    ax[0].plot(all_loss)
-    ax[0].set_title('loss (kinectic)')
-    im = ax[1].contourf(x_p, y_p, energy_landscape_1.view(62, 100).detach().cpu(), 20,
-                                cmap='Blues_r',
-                                alpha=0.8,
-                                zorder=0,
-                                levels=20)
-    z_t = z_t.cpu().detach()
-    ax[1].scatter(z_t[1:-1,0], z_t[1:-1,1], s=2, color='black', alpha=1)
-    ax[1].scatter(z_t[0,0], z_t[0,1], s=10, color='red', alpha=1)
-    ax[1].scatter(z_t[-1,0], z_t[-1,1], s=10, color='green', alpha=1)
-    ax[1].set_axis_off()
-    plt.savefig(f"plots/intermittent_plot_ep{ep+1}.png")
-    return z_t
-
-def initial_plot_fn(DEVICE, T_STEPS, dt, RADIUS, riemann_metric, z_t):
-    all_angle = -torch.linspace(-math.pi, 0, T_STEPS)
-    z_ideal = RADIUS * torch.stack([torch.cos(all_angle), torch.sin(all_angle)], dim=1).to(DEVICE)
-    z_ideal_dot = (z_ideal[1:] - z_ideal[:-1])/dt
-    z_t_dot = (z_t[1:] - z_t[:-1])/dt
-                ## g and remanian metric on the ideal trajectory
-    g_opt = riemann_metric.g(z_ideal)
-    kinectic_opt = riemann_metric.kinetic(z_ideal[:-1], z_ideal_dot)
-                ## g and remanian metric on the initial trajectory
-    g_init = riemann_metric.g(z_t)
-    kinectic_init = riemann_metric.kinetic(z_t[:-1], z_t_dot )
-    fig, ax = plt.subplots(1, 4, figsize=(4*4, 4), dpi=100)
-    ax[0].plot(g_opt.cpu().detach())
-    ax[0].set_title('g on ideal traj')
-    ax[1].plot(g_init.cpu().detach())
-    ax[1].set_title('g on init traj')
-    ax[2].plot(kinectic_opt.cpu().detach())
-    ax[2].set_title('kinetic on ideal traj')
-    ax[3].plot(kinectic_init.cpu().detach())
-    ax[3].set_title('kinetic on init traj')
-
-    print(f'MIN : g_opt = {g_opt.min().item():0.3f} -- g_init = {g_init.min().item():0.3f}')
-    print(f'MAX : g_opt = {g_opt.max().item():0.3f} -- g_init = {g_init.max().item():0.3f}')
-    print(f'MEAN : g_opt = {g_opt.mean().item():0.3f} -- g_init = {g_init.mean().item():0.3f}')
-    print(f'kinetic_opt = {kinectic_opt.mean().item():0.3f} -- kinectic_init = {kinectic_init.mean().item():0.3f}')
-    plt.savefig("plots/initial_metric_plot.png")
-    # plt.show()
+from torch import Tensor
+from tqdm import tqdm
+from typing import Tuple
+from utils.toy_dataset import GaussianMixture
+import einops
+import hydra
+import ipdb
+import math
+import matplotlib.pyplot as plt
+import numpy as np
+import sys
+import torch
+import torch.nn as nn
+sys.path.append("../")
         
-
 # # %%
 # ## helper function
 def linear_normalization(maxi, mini, target_max, target_min):
@@ -86,187 +46,6 @@ def normalize_diag(h, dataset_sample, mini=1e-4, maxi=2):
             beta.append(beta_)
         alpha, beta = torch.stack(alpha), torch.stack(beta)
         return alpha.unsqueeze(0), beta.unsqueeze(0)
-
-class h_diag_RBF(nn.Module):
-    def __init__(self, n_centers, data_size=2, data_to_fit_ambiant=None, data_to_fit_latent=None, kappa=1):
-        super().__init__()
-        self.K = n_centers
-        self.data_size = data_size
-        self.kappa = kappa
-        self.W = torch.nn.Parameter(torch.rand(self.K, 1))
-        #sigmas = np.ones((self.K, 1))
-        sigmas = np.ones((self.K, data_size))
-        if (data_to_fit_ambiant is not None) and (data_to_fit_latent is not None):
-            data_to_fit_a = data_to_fit_ambiant.cpu().detach().numpy()
-            data_to_fit_l = data_to_fit_latent.cpu().detach().numpy()
-            print("fitting")
-            clustering_model = KMeans(n_clusters=self.K)
-            clustering_model.fit(data_to_fit_a)
-            clusters = clustering_model.cluster_centers_
-            self.register_buffer('C', torch.tensor(clustering_model.cluster_centers_, dtype=torch.float32))
-            labels = clustering_model.labels_
-            for k in range(self.K):
-                points = data_to_fit_l[labels == k]
-                variance = ((points - clusters[k]) ** 2).mean(axis=0)
-                #print('variance', variance.shape)
-                sigmas[k, :] = np.sqrt(variance)
-        else:
-            self.register_buffer('C', torch.zeros(self.K, self.data_size))
-        lbda = torch.tensor(0.5 / (self.kappa * sigmas) ** 2, dtype=torch.float32)
-        self.register_buffer('lamda', lbda)
-    
-    def h(self, x_t):
-        if len(x_t.shape) > 2:
-            x_t = x_t.reshape(x.shape[0], -1)
-        dist2 = torch.cdist(x_t, self.C) ** 2
-        phi_x = torch.exp(-0.5 * self.lamda[None, :, :] * dist2[:, :, None])
-        h_x = phi_x.sum(dim=1)
-        return h_x
-
-class h_diag_Land(nn.Module):
-    def __init__(self, reference_sample, gamma = 0.2):
-        super().__init__()
-        self.reference_sample = reference_sample
-        self.gamma = gamma
-    
-
-    def weighting_function(self, x):
-        pairwise_sq_diff = (x[:, None, :] - self.reference_sample[None, :, :]) ** 2
-        pairwise_sq_dist = pairwise_sq_diff.sum(-1)
-        weights = torch.exp(-pairwise_sq_dist / (2 * self.gamma**2))
-        return weights
-    
-    def h(self, x_t):
-        weights = self.weighting_function(x_t)  # Shape [B, N]
-        differences = self.reference_sample[None, :, :] - x_t[:, None, :]  # Shape [B, N, D]
-        squared_differences = differences**2  # Shape [B, N, D]
-
-        # Compute the sum of weighted squared differences for each dimension
-        M_dd_diag = torch.einsum("bn,bnd->bd", weights, squared_differences)
-        return M_dd_diag
-
-class ConformalRiemannianMetric(nn.Module):
-    def __init__(self, h, euclidian_weight=0):
-        super().__init__()
-        self.h = h
-        self.euclidian_weight = euclidian_weight
-    def g(self, x_t):
-        return self.h(x_t)
-        
-    def kinetic(self, x_t, x_t_dot):
-        g = self.g(x_t)
-        return (self.euclidian_weight + g)*(x_t_dot.pow(2).sum(dim=-1))
-
-
-class DiagonalRiemannianMetric(nn.Module):
-    def __init__(self, h, euclid_weight=0):
-        super().__init__()
-        self.h = h
-        self.euclid_weight = euclid_weight
-        
-    def g(self, x_t):
-        return self.h(x_t)
-        
-    def kinetic(self, x_t, x_t_dot):
-        g = self.g(x_t)
-        return torch.einsum('bi,bi->b', x_t_dot, (self.euclid_weight + g) * x_t_dot)
-
-class Method2Metric(nn.Module):
-    def __init__(self,
-            ebm: nn.Module,
-            a_num: float = 1.0,
-            b_num: float = 1.0,
-            eps: float = 1e-6,
-            eta: float = 0.01,
-            mu: float = 1.0,
-            euclidian_weight = 0,
-            alpha_fn_choice: str = 'linear'):
-
-        super().__init__()
-        self.ebm: nn.Module = ebm
-        self.alpha_fn: callable = None
-        self.euclidian_weight = euclidian_weight
-
-        # different ways of obtaining alpha
-        alpha_fn_1 = lambda E_th: a_num + b_num * E_th
-        alpha_fn_2  = lambda E_th: 1/(a_num + b_num * E_th + eps)
-        self.eta: float = eta
-        self.mu: float = mu
-
-        if alpha_fn_choice == 'linear':
-            self.alpha_fn = alpha_fn_1
-        elif alpha_fn_choice == 'inverse':
-            self.alpha_fn = alpha_fn_2
-        else:
-            raise ValueError(f"Unknown alpha_fn_choice: {alpha_fn_choice}")
-        
-        self.last_tensors: dict = {}
-    
-    def get_score_n_nrg(self, x_t: Tensor) -> Tuple[Tensor, Tensor]:
-        energy_out = self.ebm.forward(x_t)
-        energy_out.requires_grad_(True)
-        score: Tensor = torch.autograd.grad(
-            outputs=energy_out,
-            inputs=x_t,
-            grad_outputs=torch.ones_like(energy_out),
-            create_graph=True,
-            retain_graph=True
-            )[0]
-        return  score, energy_out
-    
-    def kinetic(self, x_t: Tensor, x_t_dot: Tensor) -> Tensor:
-
-        score_on_pos, energy_on_pos = self.get_score_n_nrg(x_t)  
-
-        # print(f"{score_on_pos.shape=}")
-        grad_outer_prod: Tensor = torch.einsum('bi,bj->bij', score_on_pos, score_on_pos)
-        # print(f"{grad_outer_prod.shape=}")
-        alpha_val: Tensor = self.alpha_fn(energy_on_pos).to(x_t.device)
-
-        # give it a 'batch' dimension to add with grad_outer_prod
-        I_mat: Tensor = einops.rearrange(torch.eye(2).to(x_t.device), 'i j -> 1 i j')
-        # print(f"{I_mat.shape=}")
-        # print(f"{grad_outer_prod.shape=}")
-        # print(f"{alpha_val.shape=}")
-        alpha_val = einops.rearrange(alpha_val, 'b 1 -> b 1 1')
-
-        A_pre: Tensor = ( self.mu * I_mat - self.eta * grad_outer_prod)
-
-        A_mat: Tensor =  alpha_val * A_pre
-
-        A_mat: Tensor = A_mat + self.euclidian_weight * I_mat
-        # print(f"{A_mat.shape=}")
-
-        # A_mat_norms: Tensor = torch.linalg.norm(A_mat, dim=(1,2))
-        # print(f"{A_mat_norms.shape=}")
-
-        pre_out: Tensor = torch.einsum('bij,bj->bi', A_mat, x_t_dot)
-
-        out: Tensor = torch.einsum('bi,bi->b', pre_out, x_t_dot)
-        # print(f"{out.shape=}")
-        # print(f"{pre_out.shape=}")
-
-        self.last_tensors = {
-            "score_on_pos": score_on_pos.clone(),
-            "grad_outer_prod": grad_outer_prod.clone(),
-            "alpha_val": alpha_val.clone(),
-            "A_mat": A_mat.clone(),
-        }
-
-        return out
-
-
-class Method3Metric(Method2Metric):
-
-    def __init__(self,
-            ebm: nn.Module,
-            a_num: float = 1.0,
-            b_num: float = 1.0,
-            eps: float = 1e-6,
-            euclidian_weight = 0,
-            alpha_fn_choice: str = 'linear'):
-        super().__init__(ebm, a_num, b_num, eps, euclidian_weight=euclidian_weight, alpha_fn_choice=alpha_fn_choice)
-    
 
 def get_metrics_dict(cfg: DictConfig, mixture_1: nn.Module, pos: Tensor, ebm: nn.Module, reference_samples: Tensor, DEVICE: str) -> dict:
     ## Metric based on 1/p
