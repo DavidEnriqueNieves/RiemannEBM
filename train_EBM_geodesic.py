@@ -185,12 +185,43 @@ def main(cfg: DictConfig):
     MEAN: Tensor = mixture_1.means.to(DEVICE).detach()
     RADIUS: float = float(cfg.dataset.shape_radius)
 
+    # path to the cached metric trajectories, if they exist. This is useful for
+    # avoiding re-training the geodesics if we just want to change the plotting
+    # or analysis code. If the file does not exist, it will be created at the
+    # end of the training loop.
+    metric_traj_cachepath: Path = Path("./metric_traj_paths.pt")
+
+    all_metric_timed_trajs: dict[str, Tensor] = None
+    if metric_traj_cachepath.exists():
+
+        if metric_traj_cachepath.is_file():
+            all_metric_timed_trajs = torch.load(metric_traj_cachepath)
+        else:
+            raise ValueError(f"Path {metric_traj_cachepath} exists and is not a file. Please check the path and remove any directories if necessary.")
+    else:
+        all_metric_timed_trajs: dict[str, Tensor] = {}
+
+    missing_metrics: Set[str] = set(metric_dict.keys()) - set(all_metric_timed_trajs.keys())
+    
+    if len(missing_metrics) == len(all_metric_timed_trajs):
+        print("No cached trajectories found, starting training for all metrics.")
+    else:
+        print(f"Found cached trajectories for metrics: {set(all_metric_timed_trajs.keys())}. Will only train for missing metrics: {missing_metrics}")
+
     losses: dict[str, list] = {metric: [] for metric in metric_dict.keys()}
 
-    #EPOCH = 1
-    dico_traj = {}
-    
-    for metric in metric_dict.keys():
+    all_metric_losses: dict[str, list] = {metric: [] for metric in metric_dict.keys()}
+
+    # of shape (E, T_STEPS, 2)
+    metric_zts: dict[str, Tensor] = { metric: torch.zeros(EPOCH, T_STEPS, 2) for metric in metric_dict.keys()}
+    metric_zdot_ts: dict[str, Tensor] = { metric: torch.zeros(EPOCH, T_STEPS-1, 2) for metric in metric_dict.keys()}
+
+    print(f"Currently missing trajectories for metrics: {missing_metrics}")
+
+    for metric in missing_metrics:
+        all_metric_timed_trajs[metric] = torch.zeros(EPOCH, T_STEPS, 2)
+
+    for metric in missing_metrics:
         print(f"\n\n {metric}")
         riemann_metric = metric_dict[metric]
         
@@ -231,6 +262,8 @@ def main(cfg: DictConfig):
             loss: Tensor = (total_energy*dt).sum()
             loss.backward()
 
+            metric_zts[metric][ep] = z_t.cpu().detach()
+            metric_zdot_ts[metric][ep] = z_t_dot.cpu().detach()
             
             all_param = 0.0
             with torch.no_grad():
@@ -238,64 +271,170 @@ def main(cfg: DictConfig):
             optimizer.step()
             all_loss.append(loss.item())
         
-            with torch.no_grad():
-                if ep % 10000 == 0:
-                    z_t = plot_intermittent(x_p, y_p, energy_landscape_1, EPOCH, z_t, all_loss, ep)
+            all_metric_timed_trajs[metric][ep] = z_t.cpu().detach()
+            all_metric_losses[metric].append(loss.item())
+
+    torch.save(all_metric_timed_trajs, exp_dir / "ConfMetric_traj_uniform.dico")
             dico_traj[metric] =  z_t.cpu().detach()    
     torch.save(dico_traj, "./ConfMetric_traj_uniform.dico")
     
-    normed_m2_color: Tensor = torch.tensor([147,112,219]) / 255.0
-    normed_m3_color: Tensor = torch.tensor([128,0,128]) / 255.0
+    normed_m2_color: Tensor = torch.tensor([147,112,219]) 
+    normed_m3_color: Tensor = torch.tensor([128,0,128])
     m2_color: tuple = tuple(normed_m2_color.tolist())
     m3_color: tuple = tuple(normed_m3_color.tolist())
+
+    @dataclass
+    class AnimationData:
+        color_tuple: tuple
+        size: int
+        symbol: str
+        latex_label: str
+
+    dico_color: dict[str, AnimationData]={
+        "conf_ebm_logp": AnimationData(color_tuple=(66, 133, 244), size=150, symbol='.', latex_label=r"$\mathbf{G}_{E_{\theta}}$"), ## blue google (66, 133, 244)
+        "conf_ebm_invp": AnimationData(color_tuple=(52, 168, 83), size=150, symbol='.', latex_label=r"$\mathbf{G}_{1/p_{\theta}}$"), ## green google (52, 168, 83)
+        "diag_rbf_invp": AnimationData(color_tuple=(234, 67, 53), size=150, symbol='.', latex_label=r"$\mathbf{G}_{RBF}$"), ## red google (234, 67, 53)  
+        "diag_land_invp": AnimationData(color_tuple=(251, 188, 5), size=150, symbol='.', latex_label=r"$\mathbf{G}_{LAND}$"), ## yellow google (251, 188, 5)
+        "conf_true_logp": AnimationData(color_tuple=(0, 0, 0), size=150, symbol='+', latex_label=r"$\mathbf{G}_{E_{\mathcal{M}}}$"),
+        "conf_true_invp": AnimationData(color_tuple=(0, 0, 0), size=150, symbol='x', latex_label=r"$\mathbf{G}_{1/p_{\mathcal{M}}}$"),
+        "train_EBM_geodesic.Method2Metric":AnimationData(color_tuple=m2_color, size=150, symbol='.', latex_label=r"$\mathbf{G}_{M2}$"), ## yellow google (251, 188, 5)
+        "train_EBM_geodesic.Method3Metric":AnimationData(color_tuple=m3_color, size=150, symbol='.', latex_label=r"$\mathbf{G}_{M3}$"), ## yellow google (251, 188, 5)
+        }
     
-    dico_color={
-     "conf_ebm_logp": [(0.2588, 0.5216, 0.9569), 150, '.', r"$\mathbf{G}_{E_{\theta}}$"], ## blue google (66, 133, 244)
-    "conf_ebm_invp": [(0.2039, 0.6588, 0.3255), 150,'.', r"$\mathbf{G}_{1/p_{\theta}}$"], #r"$h(x) \propto 1 / \exp(-E_{\theta}(x))$"], ## green google (52, 168, 83)
-    "diag_rbf_invp":[(0.9176, 0.2627, 0.2078), 150,'.', r"$\mathbf{G}_{RBF}$"], #r"$h(x) \propto h_{RBF}$"], ## red google (234, 67, 53)
-    "diag_land_invp":[(0.9843, 0.7373, 0.0196), 150,'.', r"$\mathbf{G}_{LAND}$"], ## yellow google (251, 188, 5)
-    "conf_true_logp": ['black',150,'+' , r"$\mathbf{G}_{E_{\mathcal{M}}}$"],
-    "conf_true_invp": ['black',150, '2', r"$\mathbf{G}_{1/p_{\mathcal{M}}}$"],
-    "train_EBM_geodesic.Method2Metric":[m2_color, 150,'.', r"$\mathbf{G}_{M2}$"], ## yellow google (251, 188, 5)
-    "train_EBM_geodesic.Method3Metric":[m3_color, 150,'.', r"$\mathbf{G}_{M3}$"], ## yellow google (251, 188, 5)
-    }
 
-    fig, ax = plt.subplots(1, 1, figsize=(8,6), dpi=100)
-    im = ax.contourf(x_p, y_p, energy_landscape_1.view(62, 100).detach().cpu(), 20,
-                                cmap='Blues_r',
-                                alpha=0.8,
-                                zorder=0,
-                                levels=20)
-    color = ['orange', 'black', 'grey', 'red', 'green','purple','pink','yellow']
+    fig: go.Figure = go.Figure()
 
-    reg_space = torch.linspace(0, T_STEPS - 1, 25).long()
+    fig.update_layout(
+        title="Random Paths on Unit Circle",
+        xaxis_title="X-axis",
+        yaxis_title="Y-axis",
+        xaxis=dict(scaleanchor="y", scaleratio=1),
+        yaxis=dict(scaleanchor="x", scaleratio=1)
+    )
+
+    all_frames_data: list[list[go.Trace]] = []
+    for t in range(EPOCH):
+        frame_data: list[go.Trace] = [] 
+
+        for metric in all_metric_timed_trajs.keys():
+            if t == 0:
+                print(f"Adding metric {metric} with color {dico_color[metric].color_tuple} and label {dico_color[metric].latex_label}")
+
+            frame_data.append(
+                go.Scatter(
+                    name=dico_color[metric].latex_label,
+                    x=all_metric_timed_trajs[metric][t, :, 0].cpu().numpy(),
+                    y=all_metric_timed_trajs[metric][t, :, 1].cpu().numpy(),
+                    mode='lines+markers', marker=dict( size=5, color=plotly.colors.label_rgb(dico_color[metric].color_tuple), opacity=0.6)
+                )
+            )
+        all_frames_data.append(frame_data)
+
+    frame_zero_data: list[go.Trace] = all_frames_data[0]
+    fig.add_traces(frame_zero_data)
+        
+    all_frames: list[go.Frame] = []
+
+    for t, frame_data in enumerate(all_frames_data):
+        #  print(f"{t=}, {len(frame_data)=}")
+        all_frames.append(
+            go.Frame(
+                data=frame_data,
+                name=str(t)
+                )
+            )
+    fig.frames = all_frames
+
+    # Slider steps (one per frame)
+    slider_steps = [
+        dict(
+            method="animate",
+            args=[
+                [str(t)],
+                dict(
+                    mode="immediate",
+                    frame=dict(duration=0, redraw=True),
+                    transition=dict(duration=0),
+                ),
+            ],
+            label=str(t),
+        )
+        for t in range(EPOCH)
+    ]
+
+
+    fig.update_layout(
+        title="Random Paths on Unit Circle",
+        showlegend=True,
+        xaxis_title="X-axis",
+        yaxis_title="Y-axis",
+        xaxis=dict(scaleanchor="y", scaleratio=1),
+        yaxis=dict(scaleanchor="x", scaleratio=1),
+
+        sliders=[
+            dict(
+                active=0,
+                currentvalue=dict(prefix="t = "),
+                pad=dict(t=50),
+                steps=slider_steps,
+            )
+        ],
+
+        updatemenus=[
+            dict(
+                type="buttons",
+                showactive=False,
+                y=1,
+                x=1.1,
+                xanchor="right",
+                yanchor="top",
+                buttons=[
+                    dict(
+                        label="Play",
+                        method="animate",
+                        args=[
+                            None,
+                            dict(
+                                frame=dict(duration=100, redraw=True),
+                                fromcurrent=True,
+                                transition=dict(duration=0),
+                            ),
+                        ],
+                    ),
+                    dict(
+                        label="Pause",
+                        method="animate",
+                        args=[
+                            [None],
+                            dict(frame=dict(duration=0, redraw=False), mode="immediate"),
+                        ],
+                    ),
+                ],
+            )
+        ]
+    )
     
-    if cfg.debug:
-        ipdb.set_trace()
+    animation_savepath: Path = exp_dir / "random_paths_animation.html"
+    print(f"Saving animation to {animation_savepath}")
+    fig.write_html(str(animation_savepath), include_mathjax="cdn")
 
-    for idx, metric in enumerate(dico_traj.keys()):
-        print(metric)
-        z_t = dico_traj[metric]
-        z_t_scat = z_t[reg_space]
-        if metric in ['conf_true_logp', 'conf_true_invp']:
-            ax.scatter(z_t_scat[1:-1, 0], z_t_scat[1:-1, 1], color=dico_color[metric][0], alpha=1,
-                        s=dico_color[metric][1], marker=dico_color[metric][2], label=dico_color[metric][3], zorder=3)
-        else:
-            ax.plot(z_t[:, 0], z_t[:, 1], color=dico_color[metric][0], linewidth=3, zorder=1,label=dico_color[metric][3], alpha=1)
-            ax.scatter(z_t_scat[1:-1, 0], z_t_scat[1:-1, 1], color=dico_color[metric][0], alpha=1,
-                        s=dico_color[metric][1], marker=dico_color[metric][2], zorder=2)
-            
-        #ax.scatter(z_t[1:-1,0], z_t[1:-1,1], s=10, color=dico_color[metric][0], alpha=1, label=str(metric))
-        #ax.scatter(z_t[0,0], z_t[0,1], s=10, color='red', alpha=1)
-        #ax.scatter(z_t[-1,0], z_t[-1,1], s=10, color='green', alpha=1)
-    # Add red and green dots
-    print(f"Adding red and green dots")
-    print(f"{MEAN[10].shape=}, {MEAN[-10].shape=}")
-    ax.scatter(MEAN[10][0].cpu().detach(), MEAN[10][1].cpu().detach(), s=70, color='red',alpha=1)
-    ax.scatter(MEAN[-10][0].cpu().detach(), MEAN[-10][1].cpu().detach(), s=70, color='green',alpha=1)
-    # ax.set_axis_off()
-    plt.legend()
-    plt.savefig("plots/final_geodesic_comparison.png")
+    pickle_savepath: Path = exp_dir / "all_metric_timed_trajs.pt"
+    print(f"Saving all_metric_timed_trajs to {pickle_savepath}")
+    torch.save(all_metric_timed_trajs, pickle_savepath)
+
+    # Caching the commonly used metric trajectories for faster plotting
+    # removing trajectories for our two metrics we are training 
+
+    for metric in cfg.training.metrics:
+        metric_key = metric._target_
+        if metric_key in all_metric_timed_trajs:
+            print(f"Removing trajectory for metric {metric_key} from cached trajectories to save space.")
+            del all_metric_timed_trajs[metric_key]
+
+    print(f"Caching metric trajectories to {metric_traj_cachepath}")
+    torch.save(all_metric_timed_trajs, metric_traj_cachepath)
+
+    
 
 
 if __name__ == "__main__":
