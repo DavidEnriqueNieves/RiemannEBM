@@ -2,6 +2,7 @@
 from typing import Set
 from cbs import plot_end_comparison
 from dataclasses import dataclass   
+from cbs import create_geodesic_animation
 from datetime import datetime
 import pickle
 import plotly
@@ -92,12 +93,12 @@ def get_metrics_dict(cfg: DictConfig, mixture_1: nn.Module, pos: Tensor, ebm: nn
     print(f"g_rbf -- mini : {rbf_n(pos).min()}, maxi : {rbf_n(pos).max()}")
 
     dico_metric_unif = {
-        # "diag_rbf_invp" : DiagonalRiemannianMetric(rbf_n),
-        # "conf_ebm_invp": ConformalRiemannianMetric(inv_ebm_p),
-        # "conf_true_invp": ConformalRiemannianMetric(inv_p),
-        # "conf_ebm_logp": ConformalRiemannianMetric(ebm_en_n),
-        # "conf_true_logp": ConformalRiemannianMetric(true_en_n), 
-        # "diag_land_invp": DiagonalRiemannianMetric(land_n),
+        "diag_rbf_invp" : DiagonalRiemannianMetric(rbf_n),
+        "conf_ebm_invp": ConformalRiemannianMetric(inv_ebm_p),
+        "conf_true_invp": ConformalRiemannianMetric(inv_p),
+        "conf_ebm_logp": ConformalRiemannianMetric(ebm_en_n),
+        "conf_true_logp": ConformalRiemannianMetric(true_en_n), 
+        "diag_land_invp": DiagonalRiemannianMetric(land_n),
     } 
 
     for metric_def in cfg.training.metrics:
@@ -132,8 +133,8 @@ def main(cfg: DictConfig):
     OmegaConf.save(config=cfg, f=config_path)
     print(f"Configuration saved to {config_path}")
 
-    if cfg.debug:
-        ipdb.set_trace()
+    # if cfg.debug:
+    #     ipdb.set_trace()
 
     # %%
     DEVICE: str = cfg.device
@@ -155,7 +156,7 @@ def main(cfg: DictConfig):
     ## compute the energy landscape
     energy_landscape_1: Tensor = mixture_1.energy(pos)
     print(f"{energy_landscape_1.shape=}")
-    shape_info: dict = parse_shape(energy_landscape_1, 'B')
+    shape_info: dict = einops.parse_shape(energy_landscape_1, 'B')
 
     T_STEPS: int = int(cfg.training.t_steps)
     dt: float = 1.0/(T_STEPS-1)
@@ -189,7 +190,19 @@ def main(cfg: DictConfig):
     # avoiding re-training the geodesics if we just want to change the plotting
     # or analysis code. If the file does not exist, it will be created at the
     # end of the training loop.
-    metric_traj_cachepath: Path = Path("./metric_traj_paths.pt")
+
+    # TODO: make this load in multiple caches, with each cache verifying that
+    # the configs for the metrics match the current configs for the metric
+    metric_traj_cachepath: Path = None
+    if "metric_traj_cachepath" in cfg.meta and cfg.meta.metric_traj_cachepath is not None:
+        metric_traj_cachepath = Path(cfg.meta.metric_traj_cachepath)
+        print(f"Using provided metric trajectory cache path from config: {metric_traj_cachepath}")
+        print(f"Warning! No training to be initiated since we are loading trajectories from {metric_traj_cachepath}. If you want to train the geodesics, please remove the metric_traj_cachepath entry from the config or set it to null.")
+        exp_dir: Path = metric_traj_cachepath.parent
+    else:
+        metric_traj_cachepath = exp_dir / "metric_traj_paths.pt"
+
+    print(f"Loading metric trajectories from {metric_traj_cachepath} if it exists, otherwise will save to this path at the end of training.")
 
     all_metric_timed_trajs: dict[str, Tensor] = None
     if metric_traj_cachepath.exists():
@@ -274,152 +287,6 @@ def main(cfg: DictConfig):
             all_metric_timed_trajs[metric][ep] = z_t.cpu().detach()
             all_metric_losses[metric].append(loss.item())
 
-    torch.save(all_metric_timed_trajs, exp_dir / "ConfMetric_traj_uniform.dico")
-    
-    normed_m2_color: Tensor = torch.tensor([147,112,219]) 
-    normed_m3_color: Tensor = torch.tensor([128,0,128])
-    m2_color: tuple = tuple(normed_m2_color.tolist())
-    m3_color: tuple = tuple(normed_m3_color.tolist())
-
-    @dataclass
-    class AnimationData:
-        color_tuple: tuple
-        size: int
-        symbol: str
-        latex_label: str
-
-    dico_color: dict[str, AnimationData]={
-        "conf_ebm_logp": AnimationData(color_tuple=(66, 133, 244), size=150, symbol='.', latex_label=r"$\mathbf{G}_{E_{\theta}}$"), ## blue google (66, 133, 244)
-        "conf_ebm_invp": AnimationData(color_tuple=(52, 168, 83), size=150, symbol='.', latex_label=r"$\mathbf{G}_{1/p_{\theta}}$"), ## green google (52, 168, 83)
-        "diag_rbf_invp": AnimationData(color_tuple=(234, 67, 53), size=150, symbol='.', latex_label=r"$\mathbf{G}_{RBF}$"), ## red google (234, 67, 53)  
-        "diag_land_invp": AnimationData(color_tuple=(251, 188, 5), size=150, symbol='.', latex_label=r"$\mathbf{G}_{LAND}$"), ## yellow google (251, 188, 5)
-        "conf_true_logp": AnimationData(color_tuple=(0, 0, 0), size=150, symbol='+', latex_label=r"$\mathbf{G}_{E_{\mathcal{M}}}$"),
-        "conf_true_invp": AnimationData(color_tuple=(0, 0, 0), size=150, symbol='x', latex_label=r"$\mathbf{G}_{1/p_{\mathcal{M}}}$"),
-        "train_EBM_geodesic.Method2Metric":AnimationData(color_tuple=m2_color, size=150, symbol='.', latex_label=r"$\mathbf{G}_{M2}$"), ## yellow google (251, 188, 5)
-        "train_EBM_geodesic.Method3Metric":AnimationData(color_tuple=m3_color, size=150, symbol='.', latex_label=r"$\mathbf{G}_{M3}$"), ## yellow google (251, 188, 5)
-        }
-    
-
-    fig: go.Figure = go.Figure()
-
-    fig.update_layout(
-        title="Random Paths on Unit Circle",
-        xaxis_title="X-axis",
-        yaxis_title="Y-axis",
-        xaxis=dict(scaleanchor="y", scaleratio=1),
-        yaxis=dict(scaleanchor="x", scaleratio=1)
-    )
-
-    all_frames_data: list[list[go.Trace]] = []
-    for t in range(EPOCH):
-        frame_data: list[go.Trace] = [] 
-
-        for metric in all_metric_timed_trajs.keys():
-            if t == 0:
-                print(f"Adding metric {metric} with color {dico_color[metric].color_tuple} and label {dico_color[metric].latex_label}")
-
-            frame_data.append(
-                go.Scatter(
-                    name=dico_color[metric].latex_label,
-                    x=all_metric_timed_trajs[metric][t, :, 0].cpu().numpy(),
-                    y=all_metric_timed_trajs[metric][t, :, 1].cpu().numpy(),
-                    mode='lines+markers', marker=dict( size=5, color=plotly.colors.label_rgb(dico_color[metric].color_tuple), opacity=0.6)
-                )
-            )
-        all_frames_data.append(frame_data)
-
-    frame_zero_data: list[go.Trace] = all_frames_data[0]
-    fig.add_traces(frame_zero_data)
-        
-    all_frames: list[go.Frame] = []
-
-    for t, frame_data in enumerate(all_frames_data):
-        #  print(f"{t=}, {len(frame_data)=}")
-        all_frames.append(
-            go.Frame(
-                data=frame_data,
-                name=str(t)
-                )
-            )
-    fig.frames = all_frames
-
-    # Slider steps (one per frame)
-    slider_steps = [
-        dict(
-            method="animate",
-            args=[
-                [str(t)],
-                dict(
-                    mode="immediate",
-                    frame=dict(duration=0, redraw=True),
-                    transition=dict(duration=0),
-                ),
-            ],
-            label=str(t),
-        )
-        for t in range(EPOCH)
-    ]
-
-
-    fig.update_layout(
-        title="Random Paths on Unit Circle",
-        showlegend=True,
-        xaxis_title="X-axis",
-        yaxis_title="Y-axis",
-        xaxis=dict(scaleanchor="y", scaleratio=1),
-        yaxis=dict(scaleanchor="x", scaleratio=1),
-
-        sliders=[
-            dict(
-                active=0,
-                currentvalue=dict(prefix="t = "),
-                pad=dict(t=50),
-                steps=slider_steps,
-            )
-        ],
-
-        updatemenus=[
-            dict(
-                type="buttons",
-                showactive=False,
-                y=1,
-                x=1.1,
-                xanchor="right",
-                yanchor="top",
-                buttons=[
-                    dict(
-                        label="Play",
-                        method="animate",
-                        args=[
-                            None,
-                            dict(
-                                frame=dict(duration=100, redraw=True),
-                                fromcurrent=True,
-                                transition=dict(duration=0),
-                            ),
-                        ],
-                    ),
-                    dict(
-                        label="Pause",
-                        method="animate",
-                        args=[
-                            [None],
-                            dict(frame=dict(duration=0, redraw=False), mode="immediate"),
-                        ],
-                    ),
-                ],
-            )
-        ]
-    )
-    
-    animation_savepath: Path = exp_dir / "random_paths_animation.html"
-    print(f"Saving animation to {animation_savepath}")
-    fig.write_html(str(animation_savepath), include_mathjax="cdn")
-
-    pickle_savepath: Path = exp_dir / "all_metric_timed_trajs.pt"
-    print(f"Saving all_metric_timed_trajs to {pickle_savepath}")
-    torch.save(all_metric_timed_trajs, pickle_savepath)
-
     # Caching the commonly used metric trajectories for faster plotting
     # removing trajectories for our two metrics we are training 
 
@@ -429,10 +296,19 @@ def main(cfg: DictConfig):
             print(f"Removing trajectory for metric {metric_key} from cached trajectories to save space.")
             del all_metric_timed_trajs[metric_key]
 
-    print(f"Caching metric trajectories to {metric_traj_cachepath}")
-    torch.save(all_metric_timed_trajs, metric_traj_cachepath)
+    if metric_traj_cachepath is not None:
+        print(f"Caching metric trajectories to {metric_traj_cachepath}")
+        torch.save(all_metric_timed_trajs, metric_traj_cachepath)
 
-    
+
+    pickle_savepath: Path = exp_dir / "all_metric_timed_trajs.pt"
+    print(f"Saving all_metric_timed_trajs to {pickle_savepath}")
+    torch.save(all_metric_timed_trajs, pickle_savepath)
+
+    animation_savepath: Path = exp_dir / "geodesic_animation.html"
+    # Call the function
+    create_geodesic_animation(all_metric_timed_trajs, animation_savepath)
+
 
 
 if __name__ == "__main__":
