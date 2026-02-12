@@ -48,7 +48,7 @@ def normalize_diag(h, dataset_sample, mini=1e-4, maxi=2):
         alpha, beta = torch.stack(alpha), torch.stack(beta)
         return alpha.unsqueeze(0), beta.unsqueeze(0)
 
-def get_metrics_dict(cfg: DictConfig, mixture_1: nn.Module, pos: Tensor, ebm: nn.Module, reference_samples: Tensor, DEVICE: str) -> dict:
+def get_metrics_dict(mixture_1: nn.Module, pos: Tensor, ebm: nn.Module, reference_samples: Tensor, DEVICE: str) -> dict:
     ## Metric based on 1/p
     true_p = lambda x: mixture_1.prob(x) ## works
     p_max, p_min = true_p(pos).max().item(), true_p(pos).min().item() 
@@ -101,13 +101,6 @@ def get_metrics_dict(cfg: DictConfig, mixture_1: nn.Module, pos: Tensor, ebm: nn
         "diag_land_invp": DiagonalRiemannianMetric(land_n),
     } 
 
-    for metric_def in cfg.training.metrics:
-        print("Instantiating metric under: ")
-        print(OmegaConf.to_yaml(metric_def))
-
-        metric_obj: nn.Module = instantiate(metric_def, ebm=ebm)
-        assert isinstance(metric_obj, nn.Module), f"Instantiated metric is not a nn.Module, got {type(metric_obj)}"
-        dico_metric_unif[metric_def._target_] = metric_obj 
 
     return dico_metric_unif
 
@@ -172,13 +165,22 @@ def main(cfg: DictConfig):
     ebm.load_state_dict(loaded['weight'])
     ebm.to(DEVICE)
     
+
     metric_dict: dict = get_metrics_dict(
-        cfg,
         mixture_1,
         pos,
         ebm,
         reference_samples,
         DEVICE)
+    
+    # update metrics dictionary with our own instantiated metrics
+    for metric_def in cfg.training.metrics:
+        print("Instantiating metric under: ")
+        print(OmegaConf.to_yaml(metric_def))
+
+        metric_obj: nn.Module = instantiate(metric_def, ebm=ebm)
+        assert isinstance(metric_obj, nn.Module), f"Instantiated metric is not a nn.Module, got {type(metric_obj)}"
+        metric_dict[metric_def._target_] = metric_obj 
    
     plot_init=True
     EPOCH: int = int(cfg.training.epochs)
@@ -299,11 +301,14 @@ def main(cfg: DictConfig):
     if metric_traj_cachepath is not None:
         print(f"Caching metric trajectories to {metric_traj_cachepath}")
         torch.save(all_metric_timed_trajs, metric_traj_cachepath)
+    
+    losses_savepath: Path = exp_dir / "all_metric_losses.pt"
+    print(f"Saving all_metric_losses to {losses_savepath}")
+    torch.save(all_metric_losses, losses_savepath)
 
-
-    pickle_savepath: Path = exp_dir / "all_metric_timed_trajs.pt"
-    print(f"Saving all_metric_timed_trajs to {pickle_savepath}")
-    torch.save(all_metric_timed_trajs, pickle_savepath)
+    timed_trajs__savepath: Path = exp_dir / "all_metric_timed_trajs.pt"
+    print(f"Saving all_metric_timed_trajs to {timed_trajs__savepath}")
+    torch.save(all_metric_timed_trajs, timed_trajs__savepath)
 
     animation_savepath: Path = exp_dir / "geodesic_animation.html"
     # Call the function

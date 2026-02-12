@@ -111,8 +111,7 @@ def create_geodesic_animation(
         m2_color: tuple = tuple(normed_m2_color.tolist())
         m3_color: tuple = tuple(normed_m3_color.tolist())
 
-        all_frame_idxs: Tensor = torch.arange(epoch)
-        all_frame_idxs_subsmpl: Tensor = all_frame_idxs[::subs_epoch_mod]
+        all_frame_idxs_subsmpl: Tensor = torch.cat((torch.arange(0, 500, 10), torch.tensor([1_000, 2_000, 3_000, 4_000, 5_000, 10_000, 20_000, 30_000, 40_000, 50_000-1])), dim=0)
 
 
         dico_color: dict[str, AnimationData] = {
