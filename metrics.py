@@ -185,7 +185,7 @@ class Method2Metric(RiemannianMetric):
         A_mat: Tensor =  alpha_val * A_pre
 
         A_mat: Tensor = A_mat + self.euclidian_weight * I_mat
-        print(f"{A_mat.shape=}")
+        # print(f"{A_mat.shape=}")
 
         ## For prototyping ONLY
         # A_mat = energy_on_pos
