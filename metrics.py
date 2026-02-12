@@ -173,7 +173,7 @@ class Method2Metric(RiemannianMetric):
 
         alpha_val = einops.rearrange(alpha_val, 'b 1 -> b 1 1')
 
-        print(f"{alpha_val.shape=}")
+        # print(f"{alpha_val.shape=}")
 
         # give it a 'batch' dimension to add with grad_outer_prod
         I_mat: Tensor = einops.rearrange(torch.eye(2).to(x_t.device), 'i j -> 1 i j')
@@ -236,10 +236,12 @@ class Method3Metric(Method2Metric):
         self.beta: float = beta 
 
 
-    def one_form(self, x_t: Tensor) -> Tensor:
+    def one_form(self, x_t: Tensor, A_mat: Tensor = None) -> Tensor:
         score_on_pos, energy_on_pos = self.get_score_n_nrg(x_t)  
 
-        A_mat: Tensor = self.g(x_t)
+        # gives us a chance to reuse the A_mat calculation
+        if A_mat is None:
+            A_mat: Tensor = self.g(x_t)
             
         grad_outer_prod: Tensor = torch.einsum('bi,bj->bij', score_on_pos, score_on_pos)
         inner_prods: Tensor = torch.einsum('bi,bi->b', score_on_pos, score_on_pos)
@@ -255,7 +257,7 @@ class Method3Metric(Method2Metric):
             )
         
         one_ov_sq: Tensor = 1  / torch.sqrt(inner_prods.squeeze() + self.eps)
-        print(f"{one_ov_sq.shape=}")
+        # print(f"{one_ov_sq.shape=}")
 
         einops.parse_shape(inv_met, 'b i j')
         einops.parse_shape(score_on_pos, 'b i')
@@ -281,10 +283,13 @@ class Method3Metric(Method2Metric):
 
         pre_out: Tensor = torch.einsum('bij,bj->bi', A_mat, x_t_dot)
 
-        out: Tensor = torch.einsum('bi,bi->b', pre_out, x_t_dot)
-        # print(f"{out.shape=}")
-        # print(f"{pre_out.shape=}")
+        inner_prod: Tensor = torch.einsum('bi,bi->b', pre_out, x_t_dot)
 
+        # F(x, y)^2 = <y, A(x)y> + 2 * sq(<y, A(x)y>) * <one_form, y> + (<one_form, y>)^2
+        one_form: Tensor = self.one_form(x_t, A_mat=A_mat)
+        one_form_inner_prod: Tensor = torch.einsum('bi,bi->b', one_form, x_t_dot)
+
+        out: Tensor = inner_prod + 2 * torch.sqrt(inner_prod) * one_form_inner_prod + one_form_inner_prod.pow(2)
         return out
 
 if __name__ == "__main__":
