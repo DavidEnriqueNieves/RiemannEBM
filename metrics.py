@@ -166,7 +166,7 @@ class Method2Metric(RiemannianMetric):
     def g(self, x_t: Tensor) -> Tensor:
         score_on_pos, energy_on_pos = self.get_score_n_nrg(x_t)  
 
-        print(f"{score_on_pos.shape=}")
+        # print(f"{score_on_pos.shape=}")
         grad_outer_prod: Tensor = torch.einsum('bi,bj->bij', score_on_pos, score_on_pos)
         # print(f"{grad_outer_prod.shape=}")
         alpha_val: Tensor = self.alpha_fn(energy_on_pos).to(x_t.device)

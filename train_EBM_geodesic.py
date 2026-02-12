@@ -8,7 +8,7 @@ import pickle
 import plotly
 from hydra import initialize, compose
 from hydra.utils import instantiate
-from metrics import h_diag_RBF, Method3Metric, Method2Metric, h_diag_Land, DiagonalRiemannianMetric, ConformalRiemannianMetric
+from metrics import h_diag_RBF, Method3Metric, Method2Metric, h_diag_Land, DiagonalRiemannianMetric, ConformalRiemannianMetric, RiemannianMetric
 from model import MLP_ELU_convex
 from omegaconf import DictConfig, OmegaConf
 from pathlib import Path
@@ -104,6 +104,69 @@ def get_metrics_dict(mixture_1: nn.Module, pos: Tensor, ebm: nn.Module, referenc
 
     return dico_metric_unif
 
+def load_metric_traj_cache(
+        cfg: DictConfig,
+        exp_dir: Path,
+        metric_dict: dict[str, RiemannianMetric],
+    ) -> tuple[dict[str, Tensor], Set[str], Path]:
+    # path to the cached metric trajectories, if they exist. This is useful for
+    # avoiding re-training the geodesics if we just want to change the plotting
+    # or analysis code. If the file does not exist, it will be created at the
+    # end of the training loop.
+
+    # TODO: make this load in multiple caches, with each cache verifying that
+    # the configs for the metrics match the current configs for the metric
+    metric_traj_cachepath: Path = None
+
+    if "metric_traj_cachepath" in cfg.meta and cfg.meta.metric_traj_cachepath is not None:
+        metric_traj_cachepath = Path(cfg.meta.metric_traj_cachepath)
+        print(f"Using provided metric trajectory cache path from config: {metric_traj_cachepath}")
+        print(
+            f"Warning! No training to be initiated since we are loading trajectories from {metric_traj_cachepath}. "
+            "If you want to train the geodesics, please remove the metric_traj_cachepath entry from the config or set it to null."
+        )
+    else:
+        metric_traj_cachepath = exp_dir / "metric_traj_paths.pt"
+
+    print(
+        f"Loading metric trajectories from {metric_traj_cachepath} if it exists, otherwise will save to this path at the end of training."
+    )
+
+    all_metric_timed_trajs: dict[str, Tensor]
+
+    # Preloading cached trajectories if they exist
+    if metric_traj_cachepath.exists():
+        if metric_traj_cachepath.is_file():
+            all_metric_timed_trajs = torch.load(metric_traj_cachepath)
+        else:
+            raise ValueError(
+                f"Path {metric_traj_cachepath} exists and is not a file. Please check the path and remove any directories if necessary."
+            )
+    else:
+        all_metric_timed_trajs = {}
+
+    # Loading all old metrics
+    if "old_metric_cachepath" in cfg.meta and cfg.meta.old_metric_cachepath is not None:
+        old_metric_cachepath = Path(cfg.meta.old_metric_cachepath)
+        print(f"Loading old metric trajectories from {old_metric_cachepath} to initialize trajectories for training.")
+        all_old_metric_timed_trajs = torch.load(old_metric_cachepath)
+        for metric in all_old_metric_timed_trajs:
+            print(f"Initializing metric {metric} with cached trajectories from {old_metric_cachepath}")
+            all_metric_timed_trajs[metric] = all_old_metric_timed_trajs[metric]
+
+    missing_metrics: Set[str] = set(metric_dict.keys()) - set(all_metric_timed_trajs.keys())
+
+    # Reporting on which metrics need training
+    if len(missing_metrics) == len(all_metric_timed_trajs):
+        print("No cached trajectories found, starting training for all metrics.")
+    else:
+        print(
+            f"Found cached trajectories for metrics: {set(all_metric_timed_trajs.keys())}. "
+            f"Will only train for missing metrics: {missing_metrics}"
+        )
+
+    return all_metric_timed_trajs, missing_metrics, metric_traj_cachepath
+
 
 @hydra.main(version_base=None, config_path="configs", config_name="train_geodesic_intrp", )
 def main(cfg: DictConfig):
@@ -166,7 +229,7 @@ def main(cfg: DictConfig):
     ebm.to(DEVICE)
     
 
-    metric_dict: dict = get_metrics_dict(
+    metric_dict: dict[str, RiemannianMetric] = get_metrics_dict(
         mixture_1,
         pos,
         ebm,
@@ -179,7 +242,7 @@ def main(cfg: DictConfig):
         print(OmegaConf.to_yaml(metric_def))
 
         metric_obj: nn.Module = instantiate(metric_def, ebm=ebm)
-        assert isinstance(metric_obj, nn.Module), f"Instantiated metric is not a nn.Module, got {type(metric_obj)}"
+        assert isinstance(metric_obj, RiemannianMetric), f"Instantiated metric is not a RiemannianMetric, got {type(metric_obj)}"
         metric_dict[metric_def._target_] = metric_obj 
    
     plot_init=True
@@ -188,40 +251,11 @@ def main(cfg: DictConfig):
     MEAN: Tensor = mixture_1.means.to(DEVICE).detach()
     RADIUS: float = float(cfg.dataset.shape_radius)
 
-    # path to the cached metric trajectories, if they exist. This is useful for
-    # avoiding re-training the geodesics if we just want to change the plotting
-    # or analysis code. If the file does not exist, it will be created at the
-    # end of the training loop.
-
-    # TODO: make this load in multiple caches, with each cache verifying that
-    # the configs for the metrics match the current configs for the metric
-    metric_traj_cachepath: Path = None
-    if "metric_traj_cachepath" in cfg.meta and cfg.meta.metric_traj_cachepath is not None:
-        metric_traj_cachepath = Path(cfg.meta.metric_traj_cachepath)
-        print(f"Using provided metric trajectory cache path from config: {metric_traj_cachepath}")
-        print(f"Warning! No training to be initiated since we are loading trajectories from {metric_traj_cachepath}. If you want to train the geodesics, please remove the metric_traj_cachepath entry from the config or set it to null.")
-        exp_dir: Path = metric_traj_cachepath.parent
-    else:
-        metric_traj_cachepath = exp_dir / "metric_traj_paths.pt"
-
-    print(f"Loading metric trajectories from {metric_traj_cachepath} if it exists, otherwise will save to this path at the end of training.")
-
-    all_metric_timed_trajs: dict[str, Tensor] = None
-    if metric_traj_cachepath.exists():
-
-        if metric_traj_cachepath.is_file():
-            all_metric_timed_trajs = torch.load(metric_traj_cachepath)
-        else:
-            raise ValueError(f"Path {metric_traj_cachepath} exists and is not a file. Please check the path and remove any directories if necessary.")
-    else:
-        all_metric_timed_trajs: dict[str, Tensor] = {}
-
-    missing_metrics: Set[str] = set(metric_dict.keys()) - set(all_metric_timed_trajs.keys())
-    
-    if len(missing_metrics) == len(all_metric_timed_trajs):
-        print("No cached trajectories found, starting training for all metrics.")
-    else:
-        print(f"Found cached trajectories for metrics: {set(all_metric_timed_trajs.keys())}. Will only train for missing metrics: {missing_metrics}")
+    all_metric_timed_trajs, missing_metrics, metric_traj_cachepath = load_metric_traj_cache(
+        cfg=cfg,
+        exp_dir=exp_dir,
+        metric_dict=metric_dict,
+    )
 
     losses: dict[str, list] = {metric: [] for metric in metric_dict.keys()}
 
@@ -280,9 +314,6 @@ def main(cfg: DictConfig):
             metric_zts[metric][ep] = z_t.cpu().detach()
             metric_zdot_ts[metric][ep] = z_t_dot.cpu().detach()
             
-            all_param = 0.0
-            with torch.no_grad():
-                all_param+=z_i.grad.norm()
             optimizer.step()
             all_loss.append(loss.item())
         
@@ -292,16 +323,8 @@ def main(cfg: DictConfig):
     # Caching the commonly used metric trajectories for faster plotting
     # removing trajectories for our two metrics we are training 
 
-    for metric in cfg.training.metrics:
-        metric_key = metric._target_
-        if metric_key in all_metric_timed_trajs:
-            print(f"Removing trajectory for metric {metric_key} from cached trajectories to save space.")
-            del all_metric_timed_trajs[metric_key]
+    # TODO: maybe save my trained trajectories 
 
-    if metric_traj_cachepath is not None:
-        print(f"Caching metric trajectories to {metric_traj_cachepath}")
-        torch.save(all_metric_timed_trajs, metric_traj_cachepath)
-    
     losses_savepath: Path = exp_dir / "all_metric_losses.pt"
     print(f"Saving all_metric_losses to {losses_savepath}")
     torch.save(all_metric_losses, losses_savepath)
@@ -312,9 +335,12 @@ def main(cfg: DictConfig):
 
     animation_savepath: Path = exp_dir / "geodesic_animation.html"
     # Call the function
-    create_geodesic_animation(all_metric_timed_trajs, animation_savepath)
 
+    anim_title: str = f"Geodesic Trajectories for Experiment: '{cfg.meta.experiment_name}'"
 
+    create_geodesic_animation(all_metric_timed_trajs, animation_savepath, animation_title=anim_title)
 
 if __name__ == "__main__":
     main()
+# %%
+
