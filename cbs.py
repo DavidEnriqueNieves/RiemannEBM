@@ -91,6 +91,7 @@ def create_geodesic_animation(
         all_metric_timed_trajs: dict[str, Tensor],
         animation_savepath: Path,
         subs_epoch_mod: int = 1000,
+        animation_title: str = "Geodesic Trajectories Over Training",
         subs_path_mod: int = 5
     ) -> None:
         """
@@ -102,17 +103,19 @@ def create_geodesic_animation(
             subsample_amount: Subsampling factor for animation frames (default: 1000)
         """
 
-        sample_metric_key: str = next(iter(all_metric_timed_trajs.keys()))
-        expected_shape: Tuple[int, int, int] = all_metric_timed_trajs[sample_metric_key].shape
-        epoch: int = int(expected_shape[0])
+        lowest_num_epochs: int = min(traj.shape[0] for traj in all_metric_timed_trajs.values())
+        epoch: int = int(lowest_num_epochs)
 
         normed_m2_color: Tensor = torch.tensor([147, 112, 219]) 
         normed_m3_color: Tensor = torch.tensor([128, 0, 128])
         m2_color: tuple = tuple(normed_m2_color.tolist())
         m3_color: tuple = tuple(normed_m3_color.tolist())
 
-        all_frame_idxs_subsmpl: Tensor = torch.cat((torch.arange(0, 500, 10), torch.tensor([1_000, 2_000, 3_000, 4_000, 5_000, 10_000, 20_000, 30_000, 40_000, 50_000-1])), dim=0)
-
+            
+        if epoch > 50_000:
+            all_frame_idxs_subsmpl: Tensor = torch.cat((torch.arange(0, 500, 10), torch.tensor([1_000, 2_000, 3_000, 4_000, 5_000, 10_000, 20_000, 30_000, 40_000, 50_000-1])), dim=0)
+        else:
+            all_frame_idxs_subsmpl: Tensor = torch.arange(0, epoch, subs_epoch_mod)
 
         dico_color: dict[str, AnimationData] = {
             "conf_ebm_logp": AnimationData(color_tuple=(66, 133, 244), size=150, symbol='.', latex_label=r"$\mathbf{G}_{E_{\theta}}$"),
@@ -128,7 +131,7 @@ def create_geodesic_animation(
         fig: go.Figure = go.Figure()
 
         fig.update_layout(
-            title="Random Paths on Unit Circle",
+            title=animation_title,
             xaxis_title="X-axis",
             yaxis_title="Y-axis",
             xaxis=dict(scaleanchor="y", scaleratio=1),
@@ -147,11 +150,11 @@ def create_geodesic_animation(
 
             frame_data: list[go.Trace] = [] 
             for m_idx, metric in enumerate(all_metric_timed_trajs.keys()):
-                if m_idx == 0:
-                    print(f"Adding metric {metric} with color {dico_color[metric].color_tuple} and label {dico_color[metric].latex_label}")
-                    print(f"{all_metric_timed_trajs[metric].shape=}")
-                    print(f"{all_metric_timed_trajs[metric][::subs_epoch_mod, ::subs_path_mod, :].shape=}")
-                    print(f"{all_frame_idxs_subsmpl=}")
+                # if m_idx == 0:
+                    # print(f"Adding metric {metric} with color {dico_color[metric].color_tuple} and label {dico_color[metric].latex_label}")
+                    # print(f"{all_metric_timed_trajs[metric].shape=}")
+                    # print(f"{all_metric_timed_trajs[metric][::subs_epoch_mod, ::subs_path_mod, :].shape=}")
+                    # print(f"{all_frame_idxs_subsmpl=}")
 
                 frame_data.append(
                     go.Scatter(
