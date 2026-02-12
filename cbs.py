@@ -92,6 +92,8 @@ def create_geodesic_animation(
         animation_savepath: Path,
         subs_epoch_mod: int = 1000,
         animation_title: str = "Geodesic Trajectories Over Training",
+        all_ebm_outputs=None,
+        pos=None,
         subs_path_mod: int = 5
     ) -> None:
         """
@@ -198,6 +200,19 @@ def create_geodesic_animation(
             )
             for t in all_frame_idxs_subsmpl.tolist()
         ]
+
+        if pos is not None and all_ebm_outputs is not None:
+            print(f"Adding data points to the animation")
+            fig.add_trace(
+                go.Heatmap(
+                    x = pos[:, 0].cpu().numpy(),
+                    y = pos[:, 1].cpu().numpy(),
+                    z = all_ebm_outputs[:, 0].cpu().numpy(),
+                    colorscale='Viridis',
+                    opacity=0.7,
+                    # colorbar=dict(title="EBM Output")
+                )
+            )
 
         fig.update_layout(
             title="Random Paths on Unit Circle",

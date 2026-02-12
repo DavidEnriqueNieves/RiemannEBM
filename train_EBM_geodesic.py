@@ -338,7 +338,12 @@ def main(cfg: DictConfig):
 
     anim_title: str = f"Geodesic Trajectories for Experiment: '{cfg.meta.experiment_name}'"
 
-    create_geodesic_animation(all_metric_timed_trajs, animation_savepath, animation_title=anim_title)
+    
+    pos_detach: Tensor = pos.detach().cpu()
+    all_ebm_outputs: Tensor = ebm.forward(pos).detach().cpu()
+    print(f"{all_ebm_outputs.shape=}")
+    print(f"{pos_detach.shape=}")
+    create_geodesic_animation(all_metric_timed_trajs, animation_savepath, animation_title=anim_title, all_ebm_outputs=all_ebm_outputs, pos=pos_detach)
 
 if __name__ == "__main__":
     main()
