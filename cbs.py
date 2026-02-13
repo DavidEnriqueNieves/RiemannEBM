@@ -94,6 +94,7 @@ def create_geodesic_animation(
         animation_title: str = "Geodesic Trajectories Over Training",
         all_ebm_outputs=None,
         pos=None,
+        color_dict_to_add: dict = None,
         subs_path_mod: int = 5
     ) -> None:
         """
@@ -129,6 +130,14 @@ def create_geodesic_animation(
             "train_EBM_geodesic.Method2Metric": AnimationData(color_tuple=m2_color, size=150, symbol='.', latex_label=r"$\mathbf{G}_{M2}$"),
             "train_EBM_geodesic.Method3Metric": AnimationData(color_tuple=m3_color, size=150, symbol='.', latex_label=r"$\mathbf{G}_{M3}$"),
         }
+
+        if color_dict_to_add is not None:
+            for metric_name, anim_data in color_dict_to_add.items():
+                if metric_name not in dico_color:
+                    dico_color[metric_name] = anim_data
+                    print(f"Added custom color for metric {metric_name} to animation color dictionary")
+                else:
+                    print(f"Metric {metric_name} already has a color defined in the animation color dictionary, skipping addition")
         
         fig: go.Figure = go.Figure()
 

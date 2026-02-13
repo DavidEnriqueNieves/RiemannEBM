@@ -23,8 +23,15 @@ import torch.nn as nn
 sys.path.append("../")
 
 class RiemannianMetric(nn.Module):
-    def __init__(self):
+    def __init__(self, latex_name=""):
         super().__init__()
+        self.latex_name = latex_name
+    
+    def get_name_latex(self):
+        if self.latex_name:
+            return self.latex_name
+        else:
+            return self.__class__.__name__
     
     def g(self, x_t):
         raise NotImplementedError("Subclasses should implement this method.")
@@ -133,6 +140,8 @@ class Method2Metric(RiemannianMetric):
         self.alpha_fn: callable = None
         self.euclidian_weight = euclidian_weight
         self.eps: float = eps
+        self.a_num: float = a_num
+        self.b_num: float = b_num
 
         # different ways of obtaining alpha
         alpha_fn_1 = lambda E_th: a_num + b_num * E_th

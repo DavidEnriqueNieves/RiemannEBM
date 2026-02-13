@@ -1,7 +1,8 @@
 # %%
 from typing import Set
-from cbs import plot_end_comparison
+from cbs import plot_end_comparison, AnimationData
 from dataclasses import dataclass   
+from metrics import h_diag_RBF, Method3Metric, Method2Metric, h_diag_Land, DiagonalRiemannianMetric, ConformalRiemannianMetric, RiemannianMetric
 from cbs import create_geodesic_animation
 from datetime import datetime
 import pickle
@@ -237,13 +238,35 @@ def main(cfg: DictConfig):
         DEVICE)
     
     # update metrics dictionary with our own instantiated metrics
+    
+    color_dict_to_add: dict = {}
     for metric_def in cfg.training.metrics:
         print("Instantiating metric under: ")
         print(OmegaConf.to_yaml(metric_def))
 
+
         metric_obj: nn.Module = instantiate(metric_def, ebm=ebm)
+
         assert isinstance(metric_obj, RiemannianMetric), f"Instantiated metric is not a RiemannianMetric, got {type(metric_obj)}"
-        metric_dict[metric_def._target_] = metric_obj 
+
+        if isinstance(metric_obj, Method2Metric) or isinstance(metric_obj, Method3Metric):
+            metric_obj: Method2Metric
+            key_str: str = f"{metric_obj.__class__.__name__}_μ={metric_obj.mu:.2e}_η={metric_obj.eta:.2e}_a={metric_obj.a_num:.2e}_b={metric_obj.b_num:.2e}"
+
+            title_str: str = f"μ={metric_obj.mu:.2e} η={metric_obj.eta:.2e} a={metric_obj.a_num:.2e} b={metric_obj.b_num:.2e}"
+
+            if isinstance(metric_obj, Method3Metric):
+                key_str +=f" β={metric_obj.beta:.2e}"
+
+            metric_dict[key_str] = metric_obj 
+            rand_color: Tuple[float, float, float] = tuple(np.random.choice(range(256), size=3)/255)
+            
+            if isinstance(metric_obj, Method2Metric):
+                color_dict_to_add[key_str] = AnimationData(color_tuple=rand_color, size=150, symbol='.', latex_label=r"$\mathbf{G}_{M2}" +  title_str + "$")
+
+            if isinstance(metric_obj, Method3Metric):
+                color_dict_to_add[key_str] = AnimationData(color_tuple=rand_color, size=150, symbol='.', latex_label=r"$\mathbf{G}_{M3}" + title_str + "$")
+
    
     plot_init=True
     EPOCH: int = int(cfg.training.epochs)
@@ -343,7 +366,7 @@ def main(cfg: DictConfig):
     all_ebm_outputs: Tensor = ebm.forward(pos).detach().cpu()
     print(f"{all_ebm_outputs.shape=}")
     print(f"{pos_detach.shape=}")
-    create_geodesic_animation(all_metric_timed_trajs, animation_savepath, animation_title=anim_title, all_ebm_outputs=all_ebm_outputs, pos=pos_detach)
+    create_geodesic_animation(all_metric_timed_trajs, animation_savepath, animation_title=anim_title, all_ebm_outputs=all_ebm_outputs, pos=pos_detach, color_dict_to_add=color_dict_to_add)
 
 if __name__ == "__main__":
     main()
