@@ -28,14 +28,10 @@ import numpy as np
 import sys
 import torch
 import torch.nn as nn
+
+from utils.h_utils import linear_normalization
 sys.path.append("../")
         
-# # %%
-# ## helper function
-def linear_normalization(maxi, mini, target_max, target_min):
-    alpha = (target_max - target_min)/(maxi - mini)
-    beta = target_min - alpha*mini
-    return alpha, beta
 
 def normalize_diag(h, dataset_sample, mini=1e-4, maxi=2):
     all_h = h(dataset_sample)
@@ -238,6 +234,7 @@ def main(cfg: DictConfig):
     
     color_dict_to_add: dict = {}
     for metric_def in cfg.training.metrics:
+        print(f"------------------------------------------------------------")
         print("Instantiating metric under: ")
         print(OmegaConf.to_yaml(metric_def))
 
@@ -250,12 +247,8 @@ def main(cfg: DictConfig):
             pos.requires_grad_(True)
 
             metric_obj: nn.Module = instantiate(metric_def, ebm=ebm)
-            A_mat_out: Tensor = metric_obj.g(pos)
-            A_max, A_min = A_mat_out.max().item(), A_mat_out.min().item()
-            alpha_A, beta_A = linear_normalization(A_max, A_min, 1e3, 0)
-            metric_obj.a_num = alpha_A
-            metric_obj.b_num = beta_A
-            
+            z_t_dots: Tensor = torch.zeros_like(pos).requires_grad_(True)
+            metric_obj.kinetic(pos, check=True, x_t_dot=z_t_dots)
 
         assert isinstance(metric_obj, RiemannianMetric), f"Instantiated metric is not a RiemannianMetric, got {type(metric_obj)}"
 
@@ -278,6 +271,11 @@ def main(cfg: DictConfig):
 
             if isinstance(metric_obj, Method3Metric):
                 color_dict_to_add[key_str] = AnimationData(color_tuple=rand_color, size=150, symbol='.', latex_label=r"$\mathbf{G}_{M3}" + title_str + "$")
+    print(f"==============================")
+    print("Finished instantiating metrics from config. Final metric dict keys: ")
+    for key in metric_dict.keys():
+        print(key)
+    print(f"==============================")
 
    
     plot_init=True
@@ -313,7 +311,6 @@ def main(cfg: DictConfig):
         z1 = MEAN[-10].unsqueeze(0).to(DEVICE).detach()
         
         t = torch.linspace(0, 1, T_STEPS).unsqueeze(1).to(DEVICE).detach()
-        dt = 1.0/(T_STEPS-1)
         
         print("Initializing trajectory...")
         z_t: Tensor = (1-t)*z0 + t*z1

@@ -11,6 +11,7 @@ from tqdm import tqdm
 from typing import Tuple
 from utils.toy_dataset import GaussianMixture
 from utils.toy_dataset import GaussianMixture
+from utils.h_utils import linear_normalization
 import einops
 import hydra
 import ipdb
@@ -135,7 +136,10 @@ class Method2Metric(RiemannianMetric):
             gamma: float = 1.0,
             alpha_a: float = 1.0,
             alpha_b: float = 0.0,
-            alpha_lb: float = 0.0,
+
+            alpha_ub: float = 2.0,
+            alpha_lb: float = 1.0,
+
             euclidian_weight = 0,
             alpha_fn_choice: str = 'linear'):
 
@@ -156,7 +160,12 @@ class Method2Metric(RiemannianMetric):
 
         self._alpha_a: float = alpha_a
         self._alpha_b: float = alpha_b
+        
+        # sets the lower bound for alpha after it has been normalized over the
+        # entire dataset 
+        self._alpha_ub: float = alpha_ub
         self._alpha_lb: float = alpha_lb
+
         # different ways of obtaining alpha
         # the lower bound below is there to make sure that after "normalizing",
         # we don't get eigenvalues that are too close to zero, which would 
@@ -174,7 +183,119 @@ class Method2Metric(RiemannianMetric):
             raise ValueError(f"Unknown alpha_fn_choice: {alpha_fn_choice}")
         
         self.last_tensors: dict = {}
+
+        # cached values for pre-checking the metric
+        # usually calculated on the ENTIRE dataset
+        self.A_tot_scaled: Tensor = None
+        self.A_tot_scaled_inv: Tensor = None
+        self.score_total: Tensor = None
+        self.energy_total: Tensor = None
+
     
+    def g(self, pos: Tensor, check: bool = False) -> Tensor:
+        score_on_pos, energy_on_pos = self.get_score_n_nrg(pos)  
+
+        # print(f"{score_on_pos.shape=}")
+        grad_outer_prod: Tensor = torch.einsum('bi,bj->bij', score_on_pos, score_on_pos)
+        # print(f"{grad_outer_prod.shape=}")
+        alpha_val: Tensor = self.alpha_fn(energy_on_pos).to(pos.device)
+        alpha_val = einops.rearrange(alpha_val, 'b 1 -> b 1 1')
+
+        if check:
+            self._check_dyad_eigs(energy_on_pos, grad_outer_prod)
+        
+        if check:
+            # sets all the values for normalizing alpha
+            self._set_alpha_norm(energy_on_pos)
+
+            # recalculate alpha_val with the new normalization parameters
+            alpha_val: Tensor = self.alpha_fn(energy_on_pos).to(pos.device)
+            alpha_val = einops.rearrange(alpha_val, 'b 1 -> b 1 1')
+
+        # give it a 'batch' dimension to add with grad_outer_prod
+        I_mat: Tensor = einops.rearrange(torch.eye(2).to(pos.device), 'i j -> 1 i j')
+
+        A_pre: Tensor = ( self.mu * I_mat - self.eta * grad_outer_prod)
+        A_mat: Tensor =  alpha_val * A_pre 
+
+        A_mat: Tensor = A_mat 
+
+        if check:
+            self._check_nmd_Atot(A_mat)
+
+        return A_mat
+    
+    def _check_nmd_Atot(self, A_tot_scld):
+        # print(f"{A_mat.shape=}")
+        print(f"{A_tot_scld.shape=}")
+        eigvals, eigvecs = torch.linalg.eig(A_tot_scld)
+        print(f"{eigvecs.shape=}")
+
+        assert torch.all(eigvecs.imag.abs() < 1e-6), "Complex eigenvalues found in A_tot_scld"
+        assert torch.all(eigvals.real >= 0), f"Non-positive eigenvalues found in A_tot_scld with min {eigvals.real.min().item()}. {eigvals=}"
+
+        print(f"Min eigenvalue of A_tot_scld: {eigvals.real.min().item()}")
+        print(f"Max eigenvalue of A_tot_scld: {eigvals.real.max().item()}")
+
+        A_inv: Tensor = torch.linalg.inv(A_tot_scld)
+
+        eigvals_inv, eigvecs_inv = torch.linalg.eig(A_inv)
+        assert torch.all(eigvecs_inv.imag.abs() < 1e-6), "Complex eigenvalues found in A_inv"
+        assert torch.all(eigvals_inv.real >= 0), f"Non-positive eigenvalues found in A_inv with min {eigvals_inv.real.min().item()}. {eigvals_inv=}"
+
+
+    def _set_alpha_norm(self, energy_on_pos: Tensor):
+        """
+        Used to make sure that alpha is entirely positive over the range of
+        energies in the dataset, and that it does not lead to eigenvalues that
+        are too close to zero, which would lead to instability. Should be called
+        on the entire dataset before training.
+        """
+        min_en: float = energy_on_pos.real.min().item()
+        print(f"{min_en=}")
+        max_en: float = energy_on_pos.real.max().item()
+        print(f"{max_en=}")
+        mult_factor: float = 10.0
+        alpha_a: float = mult_factor * (1 / (max_en - min_en + self.eps))
+        alpha_b: float = min_en
+
+        alpha_lb: float = 5.0
+
+        self.alpha_a = alpha_a
+        self.alpha_b = alpha_b
+        self.alpha_lb = alpha_lb
+
+    
+    def _check_A_tot_inv(self, A_tot_scld) -> Tensor:
+                # print(f"{A_mat_scld.shape=}")
+        print(f"{A_tot_scld.shape=}")
+        eigvals, eigvecs = torch.linalg.eig(A_tot_scld)
+        print(f"{eigvecs.shape=}")
+
+        assert torch.all(eigvecs.imag.abs() < 1e-6), "Complex eigenvalues found in A_tot_scld"
+        assert torch.all(eigvals.real >= 0), f"Non-positive eigenvalues found in A_tot_scld with min {eigvals.real.min().item()}. {eigvals=}"
+
+        print(f"Min eigenvalue of A_tot_scld: {eigvals.real.min().item()}")
+        print(f"Max eigenvalue of A_tot_scld: {eigvals.real.max().item()}")
+
+        A_tot_scld_inv: Tensor = torch.linalg.inv(A_tot_scld)
+
+        eigvals_inv, eigvecs_inv = torch.linalg.eig(A_tot_scld_inv)
+        assert torch.all(eigvecs_inv.imag.abs() < 1e-6), "Complex eigenvalues found in A_tot_scld_inv"
+        assert torch.all(eigvals_inv.real >= 0), f"Non-positive eigenvalues found in A_tot_scld_inv with min {eigvals_inv.real.min().item()}. {eigvals_inv=}"
+        return A_tot_scld_inv
+
+
+    def _check_dyad_eigs(self, met_score, grad_dyad_tot):
+        eigvals, eigvecs = torch.linalg.eig(grad_dyad_tot)
+        print(f"{eigvals.shape=}")
+        print(f"{met_score.shape=}")
+        print(f"{torch.norm(met_score, dim=1, p=2)[:10]**2=}")
+        print(f"{eigvals[:10]=}")
+        assert torch.all(eigvals.imag.abs() < 1e-6), "Complex eigenvalues found in grad_outer_prod"
+        assert torch.all(eigvals.real >= -1.0e-5), f"Non-positive eigenvalues found in grad_outer_prod with min {eigvals.real.min().item()}. {eigvals=}"
+
+
     @property
     def alpha_lb(self) -> float:
         return self._alpha_lb
@@ -182,6 +303,14 @@ class Method2Metric(RiemannianMetric):
     @alpha_lb.setter
     def alpha_lb(self, value: float):
         self._alpha_lb = value
+    
+    @property
+    def alpha_ub(self) -> float:
+        return self._alpha_ub
+    
+    @alpha_ub.setter
+    def alpha_ub(self, value: float):
+        self._alpha_ub = value
     
     @property
     def alpha_a(self) -> float:
@@ -227,49 +356,10 @@ class Method2Metric(RiemannianMetric):
             retain_graph=True
             )[0]
         return  score, energy_out
-    
 
-    def g(self, x_t: Tensor) -> Tensor:
-        score_on_pos, energy_on_pos = self.get_score_n_nrg(x_t)  
+    def kinetic(self, x_t: Tensor, x_t_dot: Tensor, a_num: float = None, b_num: float = None, check=False) -> Tensor:
+        # WARNING! a_num and b_num should probably NOT be used
 
-        # print(f"{score_on_pos.shape=}")
-        grad_outer_prod: Tensor = torch.einsum('bi,bj->bij', score_on_pos, score_on_pos)
-        # print(f"{grad_outer_prod.shape=}")
-        alpha_val: Tensor = self.alpha_fn(energy_on_pos).to(x_t.device)
-
-        alpha_val = einops.rearrange(alpha_val, 'b 1 -> b 1 1')
-
-        # print(f"{alpha_val.shape=}")
-
-        # give it a 'batch' dimension to add with grad_outer_prod
-        I_mat: Tensor = einops.rearrange(torch.eye(2).to(x_t.device), 'i j -> 1 i j')
-        # print(f"{I_mat.shape=}")
-        # print(f"{grad_outer_prod.shape=}")
-        # print(f"{alpha_val.shape=}")
-        
-        A_pre: Tensor = ( self.mu * I_mat - self.eta * grad_outer_prod)
-
-        A_mat: Tensor =  alpha_val * A_pre 
-
-        A_mat: Tensor = A_mat 
-        # print(f"{A_mat.shape=}")
-        print(f"{A_mat.shape=}")
-        eigvals, eigvecs = torch.linalg.eig(A_mat)
-        print(f"{eigvecs.shape=}")
-
-        assert torch.all(eigvecs.imag.abs() < 1e-6), "Complex eigenvalues found in A_mat"
-        assert torch.all(eigvecs.real >= 0), f"Non-positive eigenvalues found in A_mat with min {eigvals.shape} {eigvals.real.min().item()}. {eigvals=}"
-
-
-        ## For prototyping ONLY
-        # A_mat = energy_on_pos
-       
-        return A_mat
-
-    def kinetic(self, x_t: Tensor, x_t_dot: Tensor, a_num: float = None, b_num: float = None) -> Tensor:
-
-        # A_mat_norms: Tensor = torch.linalg.norm(A_mat, dim=(1,2))
-        # print(f"{A_mat_norms.shape=}")
         I_mat: Tensor = einops.rearrange(torch.eye(2).to(x_t.device), 'i j -> 1 i j')
 
         if a_num is None:
@@ -277,55 +367,73 @@ class Method2Metric(RiemannianMetric):
         if b_num is None:
             b_num = self.b_num
 
-        A_mat: Tensor = a_num * self.g(x_t) + b_num * I_mat
+        A_mat: Tensor = a_num * self.g(x_t, check=check) + b_num * I_mat
 
-        pre_out: Tensor = torch.einsum('bij,bj->bi', A_mat, x_t_dot)
+        if check:
+            Amat_max, A_mat_min = A_mat.max().item(), A_mat.min().item()
+            a_num, b_num = linear_normalization(Amat_max, A_mat_min, 1e3, 0)
+            print(f"Normalizing A_mat with a_num={a_num} and b_num={b_num} to ensure that its values are in a reasonable range for stability")
+            self.a_num: float = a_num
+            self.b_num: float = b_num
 
-        out: Tensor = torch.einsum('bi,bi->b', pre_out, x_t_dot)
+        A_mat: Tensor = a_num * self.g(x_t, check=check) + b_num * I_mat
+        pre_inprods: Tensor = torch.einsum('bij,bj->bi', A_mat, x_t_dot)
+        inner_prods: Tensor = torch.einsum('bi,bi->b', pre_inprods, x_t_dot)
         # print(f"{out.shape=}")
         # print(f"{pre_out.shape=}")
 
-        return out
+        return inner_prods
 
 
 class Method3Metric(Method2Metric):
 
     def __init__(self,
             ebm: nn.Module,
-            a_num: float = 1.0,
-            b_num: float = 1.0,
             eps: float = 1e-6,
             eta: float = 0.01,
+            a_num: float = None,
+            b_num: float = None,
+            make_alpha_positive: bool = True,
             mu: float = 1.0,
             gamma: float = 1.0,
-            beta: float = 0.1,
+            alpha_a: float = 1.0,
+            alpha_b: float = 0.0,
+
+            alpha_ub: float = 2.0,
+            alpha_lb: float = 1.0,
+            beta: float = 0.5,
+
             euclidian_weight = 0,
             alpha_fn_choice: str = 'linear'):
+
         super().__init__(
             ebm=ebm,
-            a_num=a_num,
-            b_num=b_num,
             eps=eps,
             eta=eta,
+            a_num=a_num,
+            b_num=b_num,
+            make_alpha_positive=make_alpha_positive,
             mu=mu,
             gamma=gamma,
+            alpha_a=alpha_a,
+            alpha_b=alpha_b,
+            alpha_ub=alpha_ub,
+            alpha_lb=alpha_lb,
             euclidian_weight=euclidian_weight,
             alpha_fn_choice=alpha_fn_choice
         )
 
         self.beta: float = beta 
 
-
-    def one_form(self, x_t: Tensor, A_mat: Tensor = None) -> Tensor:
+    def one_form(self, x_t: Tensor, A_mat: Tensor = None, check: bool = False) -> Tensor:
         score_on_pos, energy_on_pos = self.get_score_n_nrg(x_t)  
 
-        # gives us a chance to reuse the A_mat calculation
-        if A_mat is None:
-            A_mat: Tensor = self.g(x_t)
-            
-        grad_outer_prod: Tensor = torch.einsum('bi,bj->bij', score_on_pos, score_on_pos)
-        inner_prods: Tensor = torch.einsum('bi,bi->b', score_on_pos, score_on_pos)
-        inner_prods: Tensor = einops.rearrange(inner_prods, 'b -> b 1 1')
+        score_inner_prods: Tensor = torch.einsum('bi,bi->b', score_on_pos, score_on_pos)
+        score_inner_prods: Tensor = einops.rearrange(score_inner_prods, 'b -> b 1 1')
+        
+        if check:
+            assert  not torch.isnan(score_inner_prods).any(), "NaN values found in score_inner_prods, which could lead to instability. Consider increasing eps or checking the energy landscape for very low values."
+            assert torch.all(score_inner_prods > 0), "Negative values found in score_inner_prods, which could lead to instability. Consider increasing eps or checking the energy landscape for very low values."
 
         # Computing the inverse of A(x) cheaply using the Sherman-Morrison formula
         # inv_met: Tensor = (self.eta / self.mu) * I_mat - \
@@ -335,76 +443,106 @@ class Method3Metric(Method2Metric):
         #     )
 
         # yes, I know there is an easier way of doing this but I just want this to work 
+        # yes, I know there is an easier way of doing this but I just want this to work 
+
         inv_met: Tensor = torch.linalg.inv(A_mat)
 
         I_mat: Tensor = einops.rearrange(torch.eye(2), 'i j -> 1 i j')
         I_mat = I_mat.to(x_t.device)
 
-        eigvecs, eigvals_inv_met = torch.linalg.eig(inv_met)
-        assert torch.all(inner_prods > 0), "Negative values found in inner_prods, which could lead to instability. Consider increasing eps or checking the energy landscape for very low values."
-        assert torch.all(eigvals_inv_met.imag.abs() < 1e-6), "Complex eigenvalues found in inv_met"
-        assert torch.all(eigvals_inv_met.real > 0), "Non-positive eigenvalues found in inv_met"
+        if check:
+            eigvecs, eigvals_inv_met = torch.linalg.eig(inv_met)
 
+            print(f"{torch.isnan(inv_met).any()=}")
+            assert not torch.isnan(inv_met).any(), "NaN values found in inv_met, which could lead to instability. Consider increasing eps or checking the energy landscape for very low values."
+            assert torch.all(eigvecs.imag.abs() < 1e-6), "Complex eigenvalues found in A_inv"
+            assert torch.all(eigvals_inv_met.real >= 0), f"Non-positive eigenvalues found in A_inv with min {eigvals_inv_met.real.min().item()}. {eigvals_inv_met=}"
 
+        inv_score_inner_prods_pre: Tensor = torch.einsum('bij,bj->bi', inv_met, score_on_pos)
+        inv_inner_prod: Tensor = torch.einsum('bi,bi->b', inv_score_inner_prods_pre, score_on_pos)
 
-        print(f"{torch.isnan(inv_met).any()=}")
-        assert not torch.isnan(inv_met).any(), "NaN values found in inv_met, which could lead to instability. Consider increasing eps or checking the energy landscape for very low values."
+        if check:
+            assert not torch.isnan(inv_inner_prod).any(), "NaN values found in inv_inner_prod, which could lead to instability. Consider increasing eps or checking the energy landscape for very low values."
 
-        inv_inner_prods_pre: Tensor = torch.einsum('bij,bj->bi', inv_met, score_on_pos)
-        inv_inner_prod: Tensor = torch.einsum('bi,bi->b', inv_inner_prods_pre, score_on_pos)
+            assert torch.all(inv_inner_prod > 0), "Negative values found in inv_inner_prod, which could lead to instability. Consider increasing eps or checking the energy landscape for very low values."
 
-        assert not torch.isnan(inv_inner_prod).any(), "NaN values found in inv_inner_prod, which could lead to instability. Consider increasing eps or checking the energy landscape for very low values."
-        assert  not torch.isnan(inner_prods).any(), "NaN values found in inner_prods, which could lead to instability. Consider increasing eps or checking the energy landscape for very low values."
+            print(f"{torch.isnan(inv_inner_prod).any()=}")
+            print(f"{torch.linalg.norm(inv_inner_prod)=}")
 
-        assert torch.all(inv_inner_prod > 0), "Negative values found in inv_inner_prod, which could lead to instability. Consider increasing eps or checking the energy landscape for very low values."
+        beta_comp: Tensor = torch.sqrt( inv_inner_prod / score_inner_prods)
 
-        print(f"{torch.isnan(inv_inner_prod).any()=}")
-        print(f"{torch.linalg.norm(inv_inner_prod)=}")
+        if check:
+            self._check_beta(score_inner_prods, inv_inner_prod, beta_comp)
 
-        beta_comp: Tensor = torch.sqrt( inv_inner_prod / inner_prods)
-        assert self.beta < beta_comp.max().item(), f"beta should be less than {beta_comp.max().item()} for stability reasons. Consider reducing beta or checking the energy landscape for very low values."
-        
         one_ov_sq: Tensor = 1  / torch.sqrt(inv_inner_prod + self.eps)
-        assert not torch.any(torch.isnan(one_ov_sq)), "NaN values found in one_ov_sq, which could lead to instability. Consider increasing eps or checking the energy landscape for very low values."
-        # print(f"{one_ov_sq.shape=}")
-
-
-        # if beta is less than the above value, we should not run into the assert below...
-
-        einops.parse_shape(inv_met, 'b i j')
-        einops.parse_shape(score_on_pos, 'b i')
-        einops.parse_shape(one_ov_sq, 'b')
         
+        if check:
+            assert not torch.any(torch.isnan(one_ov_sq)), "NaN values found in one_ov_sq, which could lead to instability. Consider increasing eps or checking the energy landscape for very low values."
+            # print(f"{one_ov_sq.shape=}")
+
+            # if beta is less than the above value, we should not run into the assert below...
+
+            einops.parse_shape(inv_met, 'b i j')
+            einops.parse_shape(score_on_pos, 'b i')
+            einops.parse_shape(one_ov_sq, 'b')
+
         one_form: Tensor = self.beta * one_ov_sq[:, None] * score_on_pos
-        einops.parse_shape(one_form, 'b i')
+
+        if check:
+            einops.parse_shape(one_form, 'b i')
 
         # calculating the norm of the one-form under A(x)
 
         pre_out: Tensor = torch.einsum('bij,bj->bi', A_mat , one_form)
         norm_one_form: Tensor = torch.einsum('bi,bi->b', pre_out, one_form)
-        assert torch.all(norm_one_form < 1.0), f"The norm of the one-form under A(x) should be less than 1 for stability reasons. Got an average of {norm_one_form.mean().item()} and a max of {norm_one_form.max().item()}"
 
-        one_form = self.a_num * one_form
+        if check:
+            assert torch.all(norm_one_form < 1.0), f"The norm of the one-form under A(x) should be less than 1 for stability reasons. Got an average of {norm_one_form.mean().item()} and a max of {norm_one_form.max().item()}"
+            print(f"{norm_one_form.max().item()=}")
 
         return one_form
 
-    def kinetic(self, x_t: Tensor, x_t_dot: Tensor) -> Tensor:
+    def _check_beta(self, score_inner_prods, inv_inner_prod, beta_comp):
+        print(f"beta should be less than {beta_comp.min().item()} to fulfill the condition for a Randers metric")
+        if self.beta >= beta_comp.min().item():
+            print("Warning! beta is greater than the minimum value required for a Randers metric, which could lead to instability. Consider reducing beta or checking the energy landscape for very low values.")
 
-        # A_mat_norms: Tensor = torch.linalg.norm(A_mat, dim=(1,2))
-        # print(f"{A_mat_norms.shape=}")
+        print(f"{inv_inner_prod.max().item()=}")
+        print(f"{score_inner_prods.max().item()=}")
+        print(f"{beta_comp.max().item()=}")
+    
+    def kinetic(self, x_t: Tensor, x_t_dot: Tensor, a_num: float = None, b_num: float = None, check=False) -> Tensor:
+        # WARNING! a_num and b_num should probably NOT be used
 
-        A_mat: Tensor = self.g(x_t)
+        I_mat: Tensor = einops.rearrange(torch.eye(2).to(x_t.device), 'i j -> 1 i j')
 
-        pre_out: Tensor = torch.einsum('bij,bj->bi', A_mat, x_t_dot)
+        if a_num is None:
+            a_num = self.a_num
+        if b_num is None:
+            b_num = self.b_num
 
-        inner_prod: Tensor = torch.einsum('bi,bi->b', pre_out, x_t_dot)
+        A_mat: Tensor = a_num * self.g(x_t, check=check) + b_num * I_mat
+
+        if check:
+            Amat_max, A_mat_min = A_mat.max().item(), A_mat.min().item()
+            a_num, b_num = linear_normalization(Amat_max, A_mat_min, 1e3, 0)
+            print(f"Normalizing A_mat with a_num={a_num} and b_num={b_num} to ensure that its values are in a reasonable range for stability")
+            self.a_num: float = a_num
+            self.b_num: float = b_num
+
+        A_mat: Tensor = a_num * self.g(x_t, check=check) + b_num * I_mat
+        pre_inprods: Tensor = torch.einsum('bij,bj->bi', A_mat, x_t_dot)
+        inner_prods: Tensor = torch.einsum('bi,bi->b', pre_inprods, x_t_dot)
+        # print(f"{out.shape=}")
+        # print(f"{pre_out.shape=}")
 
         # F(x, y)^2 = <y, A(x)y> + 2 * sq(<y, A(x)y>) * <one_form, y> + (<one_form, y>)^2
         one_form: Tensor = self.one_form(x_t, A_mat=A_mat)
         one_form_inner_prod: Tensor = torch.einsum('bi,bi->b', one_form, x_t_dot)
 
-        # WARNING! Find out more about this implementation?
-        out: Tensor = self.a_num * (inner_prod + 2 * torch.sqrt(inner_prod) * one_form_inner_prod + one_form_inner_prod.pow(2)) + self.b_num 
+        # WARNING! Find out more about this form of normalization???
+        out: Tensor = self.a_num * (inner_prods + 2 * torch.sqrt(inner_prods) * one_form_inner_prod + one_form_inner_prod.pow(2)) + self.b_num 
+
         return out
 
 if __name__ == "__main__":
@@ -436,7 +574,7 @@ if __name__ == "__main__":
     COVAR = torch.tensor([[1., 0], [0, 1.]]).unsqueeze(0).repeat(len(MEAN), 1, 1)
 
     x_p, y_p = torch.meshgrid(torch.linspace(-10, 10, 100), torch.linspace(-2.5, 10, 62), indexing='xy')
-    pos = torch.cat([x_p.flatten().unsqueeze(1), y_p.flatten().unsqueeze(1)], dim=1).to(DEVICE)
+    x_t = torch.cat([x_p.flatten().unsqueeze(1), y_p.flatten().unsqueeze(1)], dim=1).to(DEVICE)
 
     ## Defining the mixture
     weight_1 = (torch.ones(NB_GAUSSIANS) / NB_GAUSSIANS)
@@ -444,7 +582,7 @@ if __name__ == "__main__":
     mixture_1 = mixture_1.to(DEVICE)
 
     ## compute the energy landscape
-    energy_landscape_1: Tensor = mixture_1.energy(pos)
+    energy_landscape_1: Tensor = mixture_1.energy(x_t)
     print(f"{energy_landscape_1.shape=}")
 
 
@@ -471,6 +609,6 @@ if __name__ == "__main__":
 
     method3_metric: Method3Metric = hydra.utils.instantiate(target_metric_cfg, ebm=ebm)
 
-    pos.requires_grad_(True)
-    one_form_all: Tensor = method3_metric.one_form(pos)
+    x_t.requires_grad_(True)
+    one_form_all: Tensor = method3_metric.one_form(x_t)
     print(f"{one_form_all.shape=}")
