@@ -190,8 +190,6 @@ def main(cfg: DictConfig):
     OmegaConf.save(config=cfg, f=config_path)
     print(f"Configuration saved to {config_path}")
 
-    # if cfg.debug:
-    #     ipdb.set_trace()
 
     # %%
     DEVICE: str = cfg.device
@@ -229,7 +227,6 @@ def main(cfg: DictConfig):
     ebm.load_state_dict(loaded['weight'])
     ebm.to(DEVICE)
     
-
     metric_dict: dict[str, RiemannianMetric] = get_metrics_dict(
         mixture_1,
         pos,
@@ -247,16 +244,31 @@ def main(cfg: DictConfig):
 
         metric_obj: nn.Module = instantiate(metric_def, ebm=ebm)
 
+        # obtain the right constants to normalize 
+        if isinstance(metric_obj, Method2Metric) or isinstance(metric_obj, Method3Metric):
+            print(f"Normalizing metric {metric_def._target_} with current EBM to obtain reasonable alpha and beta constants...")
+            pos.requires_grad_(True)
+
+            metric_obj: nn.Module = instantiate(metric_def, ebm=ebm)
+            A_mat_out: Tensor = metric_obj.g(pos)
+            A_max, A_min = A_mat_out.max().item(), A_mat_out.min().item()
+            alpha_A, beta_A = linear_normalization(A_max, A_min, 1e3, 0)
+            metric_obj.a_num = alpha_A
+            metric_obj.b_num = beta_A
+            
+
         assert isinstance(metric_obj, RiemannianMetric), f"Instantiated metric is not a RiemannianMetric, got {type(metric_obj)}"
 
         if isinstance(metric_obj, Method2Metric) or isinstance(metric_obj, Method3Metric):
+
             metric_obj: Method2Metric
             key_str: str = f"{metric_obj.__class__.__name__}_μ={metric_obj.mu:.2e}_η={metric_obj.eta:.2e}_a={metric_obj.a_num:.2e}_b={metric_obj.b_num:.2e}"
 
-            title_str: str = f"μ={metric_obj.mu:.2e} η={metric_obj.eta:.2e} a={metric_obj.a_num:.2e} b={metric_obj.b_num:.2e}"
+            title_str: str = f"μ={metric_obj.mu:.2e} \ η={metric_obj.eta:.2e} \ a={metric_obj.a_num:.2e} \ b={metric_obj.b_num:.2e}"
 
             if isinstance(metric_obj, Method3Metric):
-                key_str +=f" β={metric_obj.beta:.2e}"
+                key_str +=f" \ β={metric_obj.beta:.2e}"
+                title_str += f" \ β={metric_obj.beta:.2e}"
 
             metric_dict[key_str] = metric_obj 
             rand_color: Tuple[float, float, float] = tuple(np.random.choice(range(256), size=3)/255)
