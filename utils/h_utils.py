@@ -2,7 +2,15 @@ import torch.nn as nn
 import torch
 import matplotlib.pyplot as plt
 
-def linear_normalization(maxi, mini, target_max=1, target_min=1):
+# # %%
+# ## helper function
+# the version of the function used originally in the interpolation notebook
+def linear_normalization(maxi, mini, target_max, target_min):
+    alpha = (target_max - target_min)/(maxi - mini)
+    beta = target_min - alpha*mini
+    return alpha, beta
+
+def linear_normalization_old(maxi, mini, target_max=1, target_min=1):
     target_max = torch.tensor(target_max).expand_as(maxi).to(maxi.device)
     target_min = torch.tensor(target_min).expand_as(mini).to(mini.device)
     alpha = (target_max - target_min)/(maxi - mini)
@@ -32,7 +40,7 @@ class InverseProb(nn.Module):
             #max_p = p.max()
             #min_p = p.min()
             #min_p = p.view(self.nb_samples, self.nb_interp).min()[0]
-            alpha_n, beta_n = linear_normalization(max_p, min_p, max, min)
+            alpha_n, beta_n = linear_normalization_old(max_p, min_p, max, min)
             self.alpha_n = alpha_n.view(1, 1)
             self.beta_n = beta_n.view(1, 1)
             #te =
